@@ -1,0 +1,24 @@
+# holdfast configuration for this machine.
+# This file holds one secret: api.token, generated here by `holdfast init`.
+# It is therefore worth protecting - that is why it is written 0600 - and it
+# does not belong in a backup, a shared repository or a support ticket.
+# The other secrets stay out of it, in the environment, as
+# HOLDFAST_TELEGRAM_BOT_TOKEN and HOLDFAST_HEARTBEAT_URL.
+
+host_label = "web-1"
+collection = ""
+
+[alerts]
+chat_id = ""
+
+[offsite]
+remote = ""
+
+[encryption]
+recipients = []
+
+[backup]
+mode = "auto"
+
+[api]
+token = "REDACTED"
