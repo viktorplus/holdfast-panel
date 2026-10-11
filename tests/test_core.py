@@ -171,3 +171,39 @@ def test_a_wrong_password_is_reported_and_installs_nothing(sshd, tmp_path):
     with pytest.raises(SshError, match="password was refused"):
         enroll(accepted(sshd), "wrong", key)
     assert not (sshd.home / ".ssh").exists()
+
+
+# ---- storages --------------------------------------------------------------
+
+
+def test_a_server_file_written_before_backup_root_existed_still_loads(tmp_path):
+    path = tmp_path / "servers.json"
+    path.write_text(
+        '{"servers": [{"name": "old", "host": "h", "id": "1"}]}', encoding="utf-8"
+    )
+    (server,) = ServerStore(path).load()
+    assert server.backup_root == "/opt/backups"
+
+
+def test_storages_are_kept_and_checked(tmp_path):
+    from holdfast_panel.store import Storage, StorageStore
+
+    store = StorageStore(tmp_path / "storages.json")
+    store.add(Storage(name="Мой ноутбук", kind="pc", location="D:/backups"))
+    store.add(Storage(name="Хранилище 1", kind="remote", location="shared:backups"))
+
+    again = StorageStore(tmp_path / "storages.json").load()
+    assert [(s.name, s.kind) for s in again] == [
+        ("Мой ноутбук", "pc"),
+        ("Хранилище 1", "remote"),
+    ]
+    with pytest.raises(StoreError, match="already exists"):
+        store.add(Storage(name="Мой ноутбук", kind="pc", location="E:/x"))
+    with pytest.raises(StoreError, match="remote:folder"):
+        store.add(Storage(name="bad", kind="remote", location="no-colon"))
+    with pytest.raises(StoreError, match="kind"):
+        store.add(Storage(name="bad2", kind="cloud", location="x"))
+    with pytest.raises(StoreError):
+        store.add(Storage(name="  ", kind="pc", location="x"))
+    store.remove(again[0].id)
+    assert [s.name for s in store.load()] == ["Хранилище 1"]
