@@ -408,7 +408,11 @@ def run_step_locally(title_part, filled, replacements=None):
     for old, new in (replacements or {}).items():
         line = line.replace(old, new)
     return subprocess.run(
-        [find_bash(), "-c", line], capture_output=True, text=True, check=False
+        [find_bash(), "-c", line],
+        capture_output=True,
+        encoding="utf-8",  # the messages are Russian; the runner's locale is cp1252
+        errors="replace",
+        check=False,
     )
 
 
