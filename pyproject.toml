@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "holdfast-panel"
 version = "0.1.0"
 description = "Windows control panel for servers running holdfast"
-requires-python = ">=3.11"
+requires-python = ">=3.11.4"
 # PySide6: the GUI. paramiko: SSH with a password for the one-time key
 # enrolment, and with a key afterwards. keyring: the Windows Credential
 # Manager holds the passphrase of the panel's own key.
