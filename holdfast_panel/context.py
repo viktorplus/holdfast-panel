@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from . import actionlog
 from .keys import CredentialManager, KeyPair, ensure_keypair
@@ -32,6 +32,9 @@ class AppContext:
     open_connection: Callable[[Server], Connection] | None = None
     show_error: Callable[[str], None] = lambda message: None
     confirm: Callable[[str, str], bool] = lambda title, text: False
+    ask_key_file: Callable[[], Path | None] = lambda: None
+    """Which private key file to use for this operation (never remembered on disk)."""
+    choose: Callable[[str, list[str]], int | None] = lambda title, options: None
     _parent: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -70,8 +73,27 @@ class AppContext:
         context.show_error = lambda message: QMessageBox.warning(
             context.parent_window, "Не получилось", message
         )
+        context.ask_key_file = lambda: _pick_key_file(context.parent_window)
+        context.choose = lambda title, options: _pick_one(
+            context.parent_window, title, options
+        )
         context.confirm = lambda title, text: (
             QMessageBox.question(context.parent_window, title, text)
             == QMessageBox.StandardButton.Yes
         )
         return context
+
+
+def _pick_key_file(parent) -> Path | None:
+    name, _ = QFileDialog.getOpenFileName(
+        parent,
+        "Файл приватного ключа шифрования (age)",
+        "",
+        "Ключ (*.txt *.key);;Все файлы (*)",
+    )
+    return Path(name) if name else None
+
+
+def _pick_one(parent, title: str, options: list[str]) -> int | None:
+    item, ok = QInputDialog.getItem(parent, title, title, options, 0, False)
+    return options.index(item) if ok else None

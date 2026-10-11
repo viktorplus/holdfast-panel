@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -46,6 +47,17 @@ class FakeConn:
     def put_bytes(self, path, data, mode="600"):
         self.log.append(f"put {path}")
 
+    def download_dir(self, remote_dir, local_parent, on_bytes=lambda n: None):
+        self.log.append(f"download {remote_dir}")
+        target = Path(local_parent) / remote_dir.rstrip("/").rpartition("/")[2]
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "manifest.json").write_text("{}", encoding="utf-8")
+        return target
+
+    def upload_dir(self, local_dir, remote_parent, on_bytes=lambda n: None):
+        self.log.append(f"upload {Path(local_dir).name} -> {remote_parent}")
+        return f"{remote_parent.rstrip('/')}/{Path(local_dir).name}"
+
     def __enter__(self):
         return self
 
@@ -77,9 +89,17 @@ def enrolled(name="web-1", host="10.0.0.1") -> Server:
     return Server(name=name, host=host, enrolled=True, host_fingerprint="SHA256:x")
 
 
-def settle(ctx: AppContext, rounds: int = 3) -> None:
-    """Let background tasks finish and deliver their results to the GUI thread."""
+def settle(ctx: AppContext, timeout: float = 15.0) -> None:
+    """Let background tasks finish and deliver their results to the GUI thread.
+
+    The GUI thread keeps handling events while it waits: an operation may be
+    blocked on a question that only the GUI thread can answer.
+    """
     app = application()
-    for _ in range(rounds):
-        ctx.pool.waitForDone(5000)
+    deadline = time.monotonic() + timeout
+    while not ctx.pool.waitForDone(20):
+        app.processEvents()
+        if time.monotonic() > deadline:
+            raise TimeoutError("background tasks did not finish")
+    for _ in range(3):
         app.processEvents()

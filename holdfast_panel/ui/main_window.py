@@ -22,6 +22,7 @@ from ..monitor import collect
 from ..ssh import fetch_host_fingerprint
 from ..store import Server, StoreError
 from .add_dialog import AddServerDialog
+from .backups_tab import BackupsTab
 from .base import ServerTab
 from .diagnostics_tab import DiagnosticsTab
 from .log_tab import LogTab
@@ -54,6 +55,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tab_list: list[ServerTab] = []
         self.add_tab(MonitorTab(ctx), "Монитор")
+        self.add_tab(BackupsTab(ctx), "Бэкапы")
         self.add_tab(DiagnosticsTab(ctx), "Диагностика")
         self.add_tab(LogTab(ctx), "Журнал")
         self.tabs.currentChanged.connect(self._refresh_current)

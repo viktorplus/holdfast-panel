@@ -61,6 +61,23 @@ def server_key(conn: Connection, key_file: Path) -> Iterator[tuple[str, list[boo
         removed.append(cleanup.ok and gone.ok)
 
 
+def verify_snapshot(
+    conn: Connection,
+    snapshot_dir: str,
+    key_file: Path,
+    on_text: Callable[[str], None] = lambda text: None,
+) -> bool:
+    """Read every artifact of a snapshot back through the key. Changes nothing."""
+    with server_key(conn, key_file) as (key, _removed):
+        code = conn.run_stream(
+            f"holdfast restore verify --snapshot {shlex.quote(snapshot_dir)} "
+            f"--identity {shlex.quote(key)}",
+            on_text,
+            timeout=3600,
+        )
+    return code == 0
+
+
 def _restore_command(
     snapshot_dir: str,
     key: str,
