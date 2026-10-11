@@ -140,3 +140,14 @@ def test_templates_that_publish_ports_or_keep_old_passwords_say_so():
     assert "пароль уже созданной базы" in by_id["docker-wordpress"].description
     assert "пароль уже созданной базы" in by_id["docker-postgres"].description
     assert "ufw" in by_id["docker-portainer"].description
+
+
+def test_the_full_state_of_a_server_is_in_its_tooltip(tmp_path):
+    from ui_support import enrolled
+
+    ctx = make_ctx(tmp_path, servers=[enrolled()])
+    window = MainWindow(ctx)
+    settle(ctx)
+
+    item = window.table.item(0, 2)
+    assert item.toolTip() == item.text() and "holdfast" in item.toolTip()

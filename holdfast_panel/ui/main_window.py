@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.table)
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(1, 4)
-        splitter.setSizes([320, 880])
+        splitter.setSizes([430, 770])
         self.setCentralWidget(splitter)
 
         bar = QToolBar()
@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         for row, current in enumerate(self.servers):
             if current.id == server.id:
                 self.table.item(row, 2).setText(text)
+                self.table.item(row, 2).setToolTip(text)  # the column cuts long text
 
     def _sync_tabs(self) -> None:
         server = self.selected()
