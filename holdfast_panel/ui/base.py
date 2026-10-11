@@ -92,7 +92,8 @@ class OperationTab(ServerTab):
 
     `operate` runs `fn(on_text, on_stage)` off the GUI thread. Its output goes
     to `log_view`, the stage to `stage_label`, the buttons in `action_buttons`
-    are disabled meanwhile, and the result is written to the action log.
+    are disabled meanwhile, and the result is written to the action log (unless
+    the operation logs itself, as a run on several servers does).
     """
 
     def __init__(self, ctx: AppContext) -> None:
@@ -133,6 +134,7 @@ class OperationTab(ServerTab):
         label: str,
         fn: Callable[[Callable[[str], None], Callable[[str], None]], Any],
         after: Callable[[Any], None] | None = None,
+        log: bool = True,
     ) -> None:
         server = self.server
         name = server.name if server else "-"
@@ -149,7 +151,8 @@ class OperationTab(ServerTab):
                 ("Готово: " if ok else "Не удалось: ") + (detail or label)
             )
             self.log_view.add(f"\n--- {'готово' if ok else 'не удалось'}: {detail}\n")
-            self.ctx.log(name, label, ok, detail)
+            if log:
+                self.ctx.log(name, label, ok, detail)
             if after:
                 after(result)
 
@@ -158,7 +161,8 @@ class OperationTab(ServerTab):
             self.set_busy(False)
             self.stage_label.setText(f"Ошибка: {message}")
             self.log_view.add(f"\n--- ошибка: {message}\n")
-            self.ctx.log(name, label, False, message)
+            if log:
+                self.ctx.log(name, label, False, message)
 
         task.signals.done.connect(finish)
         task.signals.failed.connect(fail)

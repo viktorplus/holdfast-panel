@@ -28,6 +28,7 @@ from .contents_tab import ContentsTab
 from .diagnostics_tab import DiagnosticsTab
 from .log_tab import LogTab
 from .monitor_tab import MonitorTab
+from .templates_tab import TemplatesTab
 from .workers import Task
 
 COLUMNS = ["Имя", "Адрес", "Состояние"]
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
         self.add_tab(MonitorTab(ctx), "Монитор")
         self.add_tab(BackupsTab(ctx), "Бэкапы")
         self.add_tab(ContentsTab(ctx), "Состав архива")
+        self.add_tab(TemplatesTab(ctx), "Шаблоны")
         self.add_tab(DiagnosticsTab(ctx), "Диагностика")
         self.add_tab(LogTab(ctx), "Журнал")
         self.tabs.currentChanged.connect(self._refresh_current)
