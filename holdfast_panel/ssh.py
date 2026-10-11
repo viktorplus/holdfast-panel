@@ -8,8 +8,11 @@ match it.
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import socket
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Self
 
@@ -84,6 +87,38 @@ class Connection:
         out = stdout.read().decode("utf-8", "replace")
         err = stderr.read().decode("utf-8", "replace")
         return Result(stdout.channel.recv_exit_status(), out, err)
+
+    def run_stream(
+        self, command: str, on_text: Callable[[str], None], timeout: float = 1800
+    ) -> int:
+        """Run a long command, handing its output (stderr merged) over as it comes.
+
+        `timeout` bounds the whole command, not one read: a step that prints
+        nothing for an hour is a hung step.
+        """
+        channel = self._client.get_transport().open_session()
+        channel.set_combine_stderr(True)
+        channel.settimeout(1.0)
+        channel.exec_command(command)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                chunk = channel.recv(4096)
+            except TimeoutError:
+                if time.monotonic() > deadline:
+                    channel.close()
+                    raise SshError(
+                        f"the command ran longer than {timeout:.0f}s"
+                    ) from None
+                continue
+            if not chunk:
+                break
+            on_text(decoder.decode(chunk))
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            on_text(tail)
+        return channel.recv_exit_status()
 
     def close(self) -> None:
         self._client.close()
