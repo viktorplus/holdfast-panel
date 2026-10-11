@@ -28,12 +28,29 @@ class Library:
     def _user(self) -> tuple[list[Template], list[str]]:
         found: list[Template] = []
         problems: list[str] = []
+        seen: dict[str, str] = {}
         if self.user_dir.is_dir():
             for path in sorted(self.user_dir.glob("*.json")):
                 try:
-                    found.append(parse(json.loads(path.read_text("utf-8"))))
+                    template = parse(json.loads(path.read_text("utf-8")))
                 except (ValueError, OSError, TemplateError) as exc:
                     problems.append(f"{path.name}: {exc}")
+                    continue
+                if template.id != path.stem:
+                    problems.append(
+                        f"{path.name}: the id is {template.id!r}, so it cannot be "
+                        "deleted or told apart; rename the file to match"
+                    )
+                    continue
+                if template.id in seen or any(
+                    template.id == b.id for b in builtin_templates()
+                ):
+                    problems.append(
+                        f"{path.name}: the id {template.id!r} is already taken"
+                    )
+                    continue
+                seen[template.id] = path.name
+                found.append(template)
         return found, problems
 
     def get(self, template_id: str) -> Template:
@@ -60,11 +77,20 @@ class Library:
             raise TemplateError(f"{template_id!r} is not one of your templates")
         path.unlink()
 
-    def import_text(self, text: str) -> Template:
-        """Add a template from pasted JSON."""
+    def import_text(self, text: str, replace: str | None = None) -> Template:
+        """Add a template from pasted JSON.
+
+        An id that is already one of yours is refused, so a paste cannot quietly
+        overwrite a template; editing passes `replace` with the id being edited.
+        """
         try:
             template = parse(json.loads(text))
         except ValueError as exc:
             raise TemplateError(f"not valid JSON: {exc}") from exc
+        if self._path(template.id).exists() and template.id != replace:
+            raise TemplateError(
+                f"you already have a template with the id {template.id!r}; "
+                "change the id, or edit the existing one"
+            )
         self.save(template)
         return template

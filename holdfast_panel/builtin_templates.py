@@ -11,6 +11,11 @@ from .templates import Template, parse
 
 _PASSWORD = "[A-Za-z0-9_.-]{8,}"
 _LABEL = "[A-Za-z0-9][A-Za-z0-9._-]*"
+# apt on a fresh server: no questions (a changed conffile keeps the old one
+# instead of waiting on stdin), and wait for a lock held by unattended-upgrades
+# instead of failing on the very first step.
+_APT_ENV = "export DEBIAN_FRONTEND=noninteractive;"
+_APT_FLAGS = "-o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=300"
 
 BOOTSTRAP = {
     "id": "holdfast-bootstrap",
@@ -25,7 +30,9 @@ BOOTSTRAP = {
         {
             "name": "recipient",
             "label": "Публичный ключ age (age1…)",
-            "pattern": "age1[a-z0-9]+",
+            # age1 + 58 characters of the bech32 alphabet: a key that is merely
+            # shaped like one would encrypt every backup to nobody.
+            "pattern": "age1[02-9ac-hj-np-z]{58}",
         },
         {
             "name": "backup_mode",
@@ -54,14 +61,21 @@ BOOTSTRAP = {
     ],
     "steps": [
         {
-            "title": "Обновить пакеты",
-            "run": "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get update && apt-get -y upgrade",
+            "title": "Проверить сочетание параметров",
+            # auto looks at Docker: without it every backup stops on its first
+            # question, and the cron job below would fail every night.
+            "run": "[ {{install_docker}} = yes ] || [ {{backup_mode}} = manual ] || "
+            "{ echo 'Режим auto работает через Docker: поставьте Docker или "
+            "выберите режим manual'; exit 1; }",
         },
         {
-            "title": "Поставить python3, zstd, age, git, curl",
-            "run": "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get install -y python3 python3-venv zstd age git curl",
+            "title": "Обновить пакеты",
+            "run": f"{_APT_ENV} apt-get update && apt-get -y {_APT_FLAGS} upgrade",
+        },
+        {
+            "title": "Поставить python3, zstd, age, git, curl, cron",
+            "run": f"{_APT_ENV} apt-get install -y {_APT_FLAGS} "
+            "python3 python3-venv zstd age git curl cron",
         },
         {
             "title": "Поставить Docker",
@@ -89,9 +103,14 @@ BOOTSTRAP = {
         },
         {
             "title": "Записать публичный ключ шифрования",
-            "run": 'key={{recipient}}; sed -i "s|^recipients = .*|recipients = '
-            '[\\"$key\\"]|" /etc/holdfast/holdfast.toml && '
-            'grep -q "$key" /etc/holdfast/holdfast.toml',
+            # An empty list is filled in; a list that already has keys is left
+            # alone (a spare key added by hand must not be wiped by a re-run),
+            # and the step then only succeeds if our key is among them.
+            "run": "key={{recipient}}; f=/etc/holdfast/holdfast.toml; "
+            "if grep -q '^recipients = \\[\\]' \"$f\"; then "
+            'sed -i "s|^recipients = .*|recipients = [\\"$key\\"]|" "$f"; fi; '
+            'grep -qF "$key" "$f" || { echo "в holdfast.toml уже другие ключи '
+            'шифрования: добавьте $key в [encryption] recipients вручную"; exit 1; }',
         },
         {
             "title": "Расписание бэкапа (cron)",
@@ -104,9 +123,10 @@ BOOTSTRAP = {
         },
         {"title": "Проверить настройки", "run": "holdfast config check"},
         {
+            # Not allowed to fail quietly: if the backup would refuse to run,
+            # the installation is not finished.
             "title": "Показать, что попадёт в копию",
             "run": "holdfast backup --dry-run",
-            "ignore_failure": True,
         },
     ],
 }
@@ -119,8 +139,8 @@ SYSTEM_UPDATE = {
     "steps": [
         {
             "title": "Обновить пакеты",
-            "run": "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get update && apt-get -y upgrade && apt-get -y autoremove",
+            "run": f"{_APT_ENV} apt-get update && "
+            f"apt-get -y {_APT_FLAGS} upgrade && apt-get -y autoremove",
         },
         {
             "title": "Нужна ли перезагрузка",
@@ -138,7 +158,7 @@ FAIL2BAN = {
     "steps": [
         {
             "title": "Установить fail2ban",
-            "run": "export DEBIAN_FRONTEND=noninteractive; apt-get install -y fail2ban",
+            "run": f"{_APT_ENV} apt-get install -y {_APT_FLAGS} fail2ban",
         },
         {
             "title": "Включить",
@@ -159,7 +179,7 @@ UFW = {
     "steps": [
         {
             "title": "Установить ufw",
-            "run": "export DEBIAN_FRONTEND=noninteractive; apt-get install -y ufw",
+            "run": f"{_APT_ENV} apt-get install -y {_APT_FLAGS} ufw",
         },
         {"title": "Разрешить SSH", "run": "ufw allow {{ssh_port}}/tcp"},
         {"title": "Разрешить 80 и 443", "run": "ufw allow 80/tcp && ufw allow 443/tcp"},

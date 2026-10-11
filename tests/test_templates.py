@@ -93,11 +93,11 @@ def test_values_are_required_defaulted_and_checked():
     assert check_values(template, {"host": "a.b"}) == {"host": "a.b", "port": "22"}
     with pytest.raises(TemplateError, match="required"):
         check_values(template, {})
-    with pytest.raises(TemplateError, match="does not look right"):
+    with pytest.raises(TemplateError, match="does not match the required format"):
         check_values(template, {"host": "A B"})
     with pytest.raises(TemplateError, match="number"):
         check_values(template, {"host": "a", "port": "x"})
-    with pytest.raises(TemplateError, match="line breaks"):
+    with pytest.raises(TemplateError, match="control character"):
         parse_and_check_newline()
 
 

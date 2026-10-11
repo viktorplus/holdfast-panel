@@ -182,7 +182,7 @@ def test_declining_runs_nothing(tmp_path):
 
 def test_a_password_never_appears_in_the_output_or_the_log(tmp_path):
     secret = "Sup3rSecret-db1"
-    conn = FakeConn({"base64 -d": Result(0, f"wrote file with {secret}\n", "")})
+    conn = FakeConn({"docker compose": Result(0, f"started with {secret}\n", "")})
     ctx, tab = build(tmp_path, lambda s: conn)
     select(tab, "docker-wordpress")
     tab.fields["project"].setText("myapp")

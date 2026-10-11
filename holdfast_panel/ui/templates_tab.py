@@ -43,9 +43,12 @@ SKELETON = {
 class TemplateEditor(QDialog):
     """A template as JSON. It is saved only if it parses."""
 
-    def __init__(self, ctx: AppContext, text: str, parent=None) -> None:
+    def __init__(
+        self, ctx: AppContext, text: str, parent=None, replace: str | None = None
+    ) -> None:
         super().__init__(parent)
         self.ctx = ctx
+        self.replace = replace
         self.setWindowTitle("Редактор шаблона (JSON)")
         self.resize(720, 560)
         self.editor = QPlainTextEdit(text)
@@ -71,7 +74,9 @@ class TemplateEditor(QDialog):
 
     def save(self) -> None:
         try:
-            self.saved = self.ctx.library.import_text(self.editor.toPlainText())
+            self.saved = self.ctx.library.import_text(
+                self.editor.toPlainText(), replace=self.replace
+            )
         except TemplateError as exc:
             self.message.setText(f"Не сохранено: {exc}")
             return
@@ -225,7 +230,7 @@ class TemplatesTab(OperationTab):
                 "Встроенный шаблон не правится: сделайте копию и правьте её."
             )
             return
-        self._edit(template.to_json())
+        self._edit(template.to_json(), replace=template.id)
 
     def copy_template(self) -> None:
         template = self.current()
@@ -256,8 +261,8 @@ class TemplatesTab(OperationTab):
             self.ctx.library.delete(template.id)
             self.reload()
 
-    def _edit(self, text: str) -> None:
-        dialog = TemplateEditor(self.ctx, text, self.ctx.parent_window)
+    def _edit(self, text: str, replace: str | None = None) -> None:
+        dialog = TemplateEditor(self.ctx, text, self.ctx.parent_window, replace)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved:
             self.reload(keep=dialog.saved.id)
 

@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import actionlog
-from .ssh import Connection, SshError
+from .ssh import Connection
 from .store import Server
-from .templates import RunResult, Template, TemplateError, run_template
+from .templates import RunResult, Template, run_template
 
 
 @dataclass
@@ -44,8 +44,8 @@ def run_on_servers(
                     values,
                     lambda kind, text, s=server: on_event(s.name, kind, text),
                 )
-        except (SshError, TemplateError) as exc:
-            result = ServerResult(server.name, False, str(exc))
+        except Exception as exc:  # noqa: BLE001 - one server's trouble is its own result
+            result = ServerResult(server.name, False, str(exc) or type(exc).__name__)
         else:
             detail = (
                 "выполнено" if run.ok else f"остановилось на шаге «{run.failed_step}»"
