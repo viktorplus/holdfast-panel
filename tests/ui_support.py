@@ -93,13 +93,19 @@ def settle(ctx: AppContext, timeout: float = 15.0) -> None:
     """Let background tasks finish and deliver their results to the GUI thread.
 
     The GUI thread keeps handling events while it waits: an operation may be
-    blocked on a question that only the GUI thread can answer.
+    blocked on a question that only the GUI thread can answer, and a finished
+    task may start the next one (an operation that reloads its list). Done means
+    two idle passes in a row.
     """
     app = application()
     deadline = time.monotonic() + timeout
-    while not ctx.pool.waitForDone(20):
-        app.processEvents()
+    idle = 0
+    while idle < 2:
+        if ctx.pool.waitForDone(20):
+            app.processEvents()
+            idle += 1
+        else:
+            app.processEvents()
+            idle = 0
         if time.monotonic() > deadline:
             raise TimeoutError("background tasks did not finish")
-    for _ in range(3):
-        app.processEvents()

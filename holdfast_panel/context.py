@@ -78,7 +78,13 @@ class AppContext:
             context.parent_window, title, options
         )
         context.confirm = lambda title, text: (
-            QMessageBox.question(context.parent_window, title, text)
+            QMessageBox.question(
+                context.parent_window,
+                title,
+                text,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,  # Enter must not overwrite live data
+            )
             == QMessageBox.StandardButton.Yes
         )
         return context

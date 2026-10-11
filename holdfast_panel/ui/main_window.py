@@ -83,9 +83,24 @@ class MainWindow(QMainWindow):
             action.triggered.connect(slot)
             bar.addAction(action)
 
+        self._checking: set[str] = set()
         self.servers: list[Server] = []
         self.reload()
         self.refresh_all()
+
+    def closeEvent(self, event) -> None:
+        busy = [t for t in self.tab_list if getattr(t, "busy", False)]
+        if busy and not self.ctx.confirm(
+            "Закрыть панель",
+            "Операция ещё выполняется на сервере. Если закрыть панель сейчас, "
+            "она может остановиться на середине. Закрыть?",
+        ):
+            event.ignore()
+            return
+        for tab in self.tab_list:
+            if hasattr(tab, "closing"):
+                tab.closing = True  # a worker waiting for an answer stops waiting
+        event.accept()
 
     def add_tab(self, tab: ServerTab, title: str) -> None:
         self.tab_list.append(tab)
@@ -132,15 +147,23 @@ class MainWindow(QMainWindow):
 
     def add_server(self) -> None:
         dialog = AddServerDialog(self)
-        if dialog.exec() != AddServerDialog.DialogCode.Accepted:
-            return
+        accepted = dialog.exec() == AddServerDialog.DialogCode.Accepted
         name, host, port, user, password = dialog.values()
+        dialog.password.clear()  # the form must not keep it
+        dialog.deleteLater()
+        if not accepted:
+            return
+        box = [password]  # emptied once used; closures hold the box, not the text
         server = Server(name=name, host=host, port=port, user=user)
         self.statusBar().showMessage(f"Связываюсь с {host}…")
         task = Task(lambda: fetch_host_fingerprint(host, port))
-        task.signals.done.connect(lambda fp: self._confirm_host(server, fp, password))
-        task.signals.failed.connect(self._failed)
+        task.signals.done.connect(lambda fp: self._confirm_host(server, fp, box))
+        task.signals.failed.connect(lambda message: self._enrol_failed(message, box))
         self._keep(task)
+
+    def _enrol_failed(self, message: str, box: list[str]) -> None:
+        box[0] = ""
+        self._failed(message)
 
     def _keep(self, task: Task) -> None:
         self.ctx.pool.start(task)
@@ -148,7 +171,7 @@ class MainWindow(QMainWindow):
         task.signals.done.connect(lambda _: self._running.remove(task))
         task.signals.failed.connect(lambda _: self._running.remove(task))
 
-    def _confirm_host(self, server: Server, fingerprint: str, password: str) -> None:
+    def _confirm_host(self, server: Server, fingerprint: str, box: list[str]) -> None:
         self.statusBar().clearMessage()
         answer = QMessageBox.question(
             self,
@@ -159,16 +182,24 @@ class MainWindow(QMainWindow):
             "Подключаться, только если он совпадает.",
         )
         if answer != QMessageBox.StandardButton.Yes:
+            box[0] = ""
             return
         server.host_fingerprint = fingerprint
         try:
             self.ctx.servers.add(server)
         except StoreError as exc:
-            self._failed(str(exc))
+            self._enrol_failed(str(exc), box)
             return
         self.reload()
         self.statusBar().showMessage("Устанавливаю ключ…")
-        task = Task(lambda: enroll(server, password, self.ctx.get_key()))
+
+        def run() -> None:
+            try:
+                enroll(server, box[0], self.ctx.get_key())
+            finally:
+                box[0] = ""
+
+        task = Task(run)
         task.signals.done.connect(lambda _: self._enrolled(server))
         task.signals.failed.connect(self._failed)
         self._keep(task)
@@ -202,7 +233,14 @@ class MainWindow(QMainWindow):
                 self.check(server)
 
     def check(self, server: Server) -> None:
-        """The short state in the list: reachable, and what needs attention."""
+        """The short state in the list: reachable, and what needs attention.
+
+        A server already being checked is not asked again: every check is an SSH
+        connection, and "refresh" pressed twice must not double them.
+        """
+        if server.id in self._checking:
+            return
+        self._checking.add(server.id)
         self.set_state(server, "проверяю…")
 
         def read():
@@ -212,16 +250,19 @@ class MainWindow(QMainWindow):
         task = Task(read)
 
         def ok(stats) -> None:
+            self._checking.discard(server.id)
             alerts = evaluate(stats, None)
             level = worst(alerts)
             version = stats.holdfast_version or "holdfast не установлен"
             note = f" · {alerts[0].text}" if alerts else ""
             self.set_state(server, f"{MARK[level]} {version}{note}")
 
+        def failed(message: str) -> None:
+            self._checking.discard(server.id)
+            self.set_state(server, f"{MARK[FAIL]} нет связи: {message}")
+
         task.signals.done.connect(ok)
-        task.signals.failed.connect(
-            lambda message: self.set_state(server, f"{MARK[FAIL]} нет связи: {message}")
-        )
+        task.signals.failed.connect(failed)
         self._keep(task)
 
     def _failed(self, message: str) -> None:

@@ -1,5 +1,6 @@
 import pytest
 from ui_support import (
+    COLLECTED,
     FakeConn,
     application,
     enrolled,
@@ -75,15 +76,25 @@ def test_selecting_a_server_fills_the_monitor_with_real_debian_output(tmp_path):
 
 
 def test_a_result_for_a_server_that_is_no_longer_selected_is_dropped(tmp_path):
-    ctx = make_ctx(tmp_path, servers=[enrolled("a", "1"), enrolled("b", "2")])
+    outputs = {
+        "a": COLLECTED.replace("Debian GNU/Linux 13 (trixie)", "OS-of-A"),
+        "b": COLLECTED.replace("Debian GNU/Linux 13 (trixie)", "OS-of-B"),
+    }
+    ctx = make_ctx(
+        tmp_path,
+        conn_factory=lambda s: FakeConn({"##end": Result(0, outputs[s.name], "")}),
+        servers=[enrolled("a", "1"), enrolled("b", "2")],
+    )
     window = MainWindow(ctx)
     settle(ctx)
     window.table.selectRow(0)
     window.table.selectRow(1)
     settle(ctx)
 
-    assert window.tab_list[0].server.name == "b"
-    assert window.tab_list[0].processes.rowCount() == 10
+    monitor = window.tab_list[0]
+    assert monitor.server.name == "b"
+    assert "OS-of-B" in monitor.summary.text()
+    assert "OS-of-A" not in monitor.summary.text()
 
 
 def test_a_server_without_a_key_is_not_contacted(tmp_path):

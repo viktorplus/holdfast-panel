@@ -126,6 +126,12 @@ class BackupsTab(OperationTab):
         self._fill_where()
         self.refresh()
 
+    def refresh_enabled(self) -> None:
+        super().refresh_enabled()
+        enabled = not self.busy and bool(self.server and self.server.enrolled)
+        for widget in (self.where, self.storages_button):
+            widget.setEnabled(enabled)
+
     def current_place(self) -> tuple[str, str]:
         return self.where.currentData() or (SERVER, "")
 
@@ -144,9 +150,7 @@ class BackupsTab(OperationTab):
         server = self.server
         self.listing = Listing()
         self.table.setRowCount(0)
-        enabled = server is not None and server.enrolled
-        for button in (*self.action_buttons, self.where):
-            button.setEnabled(enabled and not self.busy)
+        self.refresh_enabled()
         if server is None or not server.enrolled:
             self.note.setText(
                 "Выберите сервер слева" if server is None else "Ключ ещё не установлен"

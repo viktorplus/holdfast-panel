@@ -39,6 +39,7 @@ class MonitorTab(ServerTab):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__(ctx)
         self.last_stats: Stats | None = None
+        self.reading = False
         self.summary = QLabel("Выберите сервер слева")
         self.summary.setWordWrap(True)
         self.disks = _table(["Диск", "Занято", "Размер"])
@@ -49,7 +50,7 @@ class MonitorTab(ServerTab):
         self.auto = QCheckBox("Обновлять каждые 10 с")
         self.auto.toggled.connect(self._toggle_timer)
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh)
+        self.timer.timeout.connect(self._tick)
 
         bar = QHBoxLayout()
         bar.addWidget(self.reload)
@@ -65,6 +66,12 @@ class MonitorTab(ServerTab):
         ):
             layout.addWidget(QLabel(f"<b>{title}</b>"))
             layout.addWidget(table)
+
+    def _tick(self) -> None:
+        # not while another tab is in front, and not on top of a request that is
+        # still on its way: each one opens an SSH connection
+        if self.isVisible() and not self.reading:
+            self.refresh()
 
     def _toggle_timer(self, on: bool) -> None:
         if on:
@@ -82,6 +89,7 @@ class MonitorTab(ServerTab):
                 table.setRowCount(0)
             return
         self.summary.setText("Читаю состояние…")
+        self.reading = True
 
         def read() -> Stats:
             with self.ctx.open_connection(server) as conn:
@@ -90,9 +98,11 @@ class MonitorTab(ServerTab):
         self.work(read, self.show_stats, self.show_failure)
 
     def show_failure(self, message: str) -> None:
+        self.reading = False
         self.summary.setText(f"Нет связи: {message}")
 
     def show_stats(self, stats: Stats) -> None:
+        self.reading = False
         swap = (
             f", подкачка {human_bytes(stats.swap_total - stats.swap_free)} "
             f"из {human_bytes(stats.swap_total)}"

@@ -37,6 +37,8 @@ class ContentsTab(OperationTab):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__(ctx)
         self.original = ""
+        self.shown_id: str | None = None
+        self.drafts: dict[str, tuple[str, str]] = {}
         self.mode = QComboBox()
         self.mode.addItems(["auto", "manual"])
         self.excludes = QListWidget()
@@ -56,7 +58,7 @@ class ContentsTab(OperationTab):
         self.message.setWordWrap(True)
 
         self.load_button = QPushButton("Загрузить с сервера")
-        self.load_button.clicked.connect(self.refresh)
+        self.load_button.clicked.connect(self.reload_from_server)
         self.diff_button = QPushButton("Показать изменения")
         self.diff_button.clicked.connect(self.show_diff)
         self.save_button = QPushButton("Сохранить на сервер")
@@ -120,18 +122,31 @@ class ContentsTab(OperationTab):
 
     # ---- loading -----------------------------------------------------------
 
+    def dirty(self) -> bool:
+        return self.editor.toPlainText() != self.original
+
     def refresh(self) -> None:
+        """Show the server's file. Unsaved edits are never thrown away silently:
+        on the same server they are kept, and when another server is picked they
+        are set aside and come back when this server is shown again."""
         server = self.server
-        enabled = server is not None and server.enrolled and not self.busy
-        for button in self.action_buttons:
-            button.setEnabled(enabled)
+        self.refresh_enabled()
         if server is None or not server.enrolled:
             self.message.setText(
                 "Выберите сервер слева" if server is None else "Ключ ещё не установлен"
             )
             self.editor.setPlainText("")
             self.excludes.clear()
+            self.original, self.shown_id = "", None
             return
+        if self.shown_id == server.id and self.dirty():
+            self.message.setText(
+                "Есть несохранённые правки; «Загрузить с сервера» отменит их."
+            )
+            return
+        if self.shown_id is not None and self.shown_id != server.id and self.dirty():
+            self.drafts[self.shown_id] = (self.original, self.editor.toPlainText())
+        self.shown_id = server.id
         self.message.setText("Читаю файл…")
 
         def read() -> str:
@@ -140,13 +155,30 @@ class ContentsTab(OperationTab):
 
         self.work(read, self.show_config, self.show_failure)
 
+    def reload_from_server(self) -> None:
+        """The button: forget unsaved edits and read the file again."""
+        if self.server is not None:
+            self.drafts.pop(self.server.id, None)
+        self.original = self.editor.toPlainText()  # nothing counts as unsaved now
+        self.refresh()
+
     def show_failure(self, message: str) -> None:
         self.message.setText(f"Не удалось прочитать конфигурацию: {message}")
 
     def show_config(self, text: str) -> None:
         self.original = text
+        draft = self.drafts.pop(self.server.id, None) if self.server else None
+        if draft and draft[0] == text:
+            self.editor.setPlainText(draft[1])
+            self.message.setText("Восстановлены ваши несохранённые правки.")
+            self.load_form(draft[1])
+            return
         self.editor.setPlainText(text)
-        self.message.setText("Файл загружен.")
+        self.message.setText(
+            "Файл на сервере изменился, ваши прежние правки не применены."
+            if draft
+            else "Файл загружен."
+        )
         self.load_form(text)
 
     def load_form(self, text: str) -> None:

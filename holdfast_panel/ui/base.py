@@ -119,28 +119,43 @@ class OperationTab(ServerTab):
         self._signals.stage.connect(self.stage_label.setText)
         self._signals.question.connect(self._answer_question)
         self.busy = False
+        self.closing = False
 
     def _answer_question(self, title: str, text: str, reply: object) -> None:
         """Runs on the GUI thread: the one place a dialog may be opened."""
         event, box = reply
-        box.append(bool(self.ctx.confirm(title, text)))
-        event.set()
+        try:
+            box.append(bool(self.ctx.confirm(title, text)))
+        finally:
+            # Whatever happened, the worker must not wait for ever; no answer is
+            # a "no", which is the safe one for everything the panel asks.
+            if not box:
+                box.append(False)
+            event.set()
 
     def ask(self, title: str, text: str) -> bool:
         """Ask the user from inside an operation (a worker thread) and wait.
 
         Qt allows dialogs only on the GUI thread, so the question is sent there
-        by a signal and this thread blocks until it is answered.
+        by a signal and this thread blocks until it is answered. If the window
+        is closing the answer is "no" and the operation stops.
         """
         event, box = threading.Event(), []
         self._signals.question.emit(title, text, (event, box))
-        event.wait()
+        while not event.wait(0.25):
+            if self.closing:
+                return False
         return box[0]
 
     def set_busy(self, busy: bool) -> None:
         self.busy = busy
+        self.refresh_enabled()
+
+    def refresh_enabled(self) -> None:
+        """One rule for the buttons: a server with a key, and nothing running."""
+        enabled = not self.busy and bool(self.server and self.server.enrolled)
         for button in self.action_buttons:
-            button.setEnabled(not busy)
+            button.setEnabled(enabled)
 
     def operate(
         self,
@@ -166,7 +181,9 @@ class OperationTab(ServerTab):
             self.log_view.add(f"\n--- {'готово' if ok else 'не удалось'}: {detail}\n")
             if log:
                 self.ctx.log(name, label, ok, detail)
-            if after:
+            # The user may have moved to another server meanwhile: what `after`
+            # does (reload, remember the saved text) belongs to the old one.
+            if after and self.server is server:
                 after(result)
 
         def fail(message: str) -> None:

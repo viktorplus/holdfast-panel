@@ -162,11 +162,14 @@ class TemplatesTab(OperationTab):
             self.message.setText("Не прочитаны файлы шаблонов: " + "; ".join(problems))
 
     def refresh(self) -> None:
-        enabled = not self.busy
+        self.refresh_enabled()
+
+    def refresh_enabled(self) -> None:
+        # running on every server needs no selected server, only that nothing runs
         self.run_button.setEnabled(
-            enabled and bool(self.server and self.server.enrolled)
+            not self.busy and bool(self.server and self.server.enrolled)
         )
-        self.group_button.setEnabled(enabled)
+        self.group_button.setEnabled(not self.busy)
 
     def current(self) -> Template | None:
         row = self.listing.currentRow()
@@ -196,6 +199,13 @@ class TemplatesTab(OperationTab):
             self.form.addRow(
                 var.label + ("" if var.required else " (необязательно)"), edit
             )
+
+    def clear_passwords(self) -> None:
+        """The values of a run are already in hand; do not leave passwords in the form."""
+        template = self.current()
+        for var in template.variables if template else ():
+            if var.kind == "password" and var.name in self.fields:
+                self.fields[var.name].clear()
 
     def values(self) -> dict[str, str]:
         return {name: edit.text() for name, edit in self.fields.items()}
@@ -294,6 +304,7 @@ class TemplatesTab(OperationTab):
         )
         if not self.ctx.confirm("Запуск шаблона", question):
             return
+        self.clear_passwords()
 
         def run(on_text, on_stage):
             with self.ctx.open_connection(server) as conn:
@@ -334,6 +345,7 @@ class TemplatesTab(OperationTab):
         )
         if not self.ctx.confirm("Запуск на всех серверах", question):
             return
+        self.clear_passwords()
 
         def run(on_text, on_stage):
             def event(server: str, kind: str, text: str) -> None:
