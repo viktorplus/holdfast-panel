@@ -1,0 +1,46 @@
+##os
+Debian GNU/Linux 13 (trixie)
+6.18.40.1-microsoft-standard-WSL2
+##uptime
+489808.95
+##load
+0.35 0.41 0.52 1/366 251
+##cpus
+8
+##stat
+cpu  5976286 0 5004948 377156617 833158 0 1787176 0 0 0
+cpu  5976304 0 5004960 377157381 833158 0 1787180 0 0 0
+##mem
+MemTotal:       16263540 kB
+MemAvailable:   15118588 kB
+SwapTotal:       4194304 kB
+SwapFree:        4110844 kB
+##disk
+/dev/loop0         819689472     819689472             0     100% /mnt/wsl/docker-desktop/cli-tools
+drivers        1999298883584 1152894038016  846404845568      58% /usr/lib/wsl/drivers
+/dev/sdf       1081101176832   10883293184 1015225528320       2% /
+rootfs            8322392064       3432448    8318959616       1% /init
+C:\            1999298883584 1152894038016  846404845568      58% /mnt/c
+E:\             126934315008   82903969792   44030345216      66% /mnt/e
+##procs
+      1 root                  6.6  0.0 systemd
+    247 user                  2.7  0.0 bash
+     79 root                  2.1  0.0 systemd-udevd
+     41 root                  1.7  0.1 systemd-journal
+    197 user                  0.8  0.0 systemd
+    162 root                  0.4  0.0 systemd-logind
+    212 user                  0.2  0.0 bash
+    160 messagebus            0.2  0.0 dbus-daemon
+    159 root                  0.1  0.0 cron
+    187 root                  0.0  0.0 login
+##docker
+
+The command 'docker' could not be found in this WSL 2 distro.
+We recommend to activate the WSL integration in Docker Desktop settings.
+
+For details about using Docker Desktop with WSL 2, visit:
+
+https://docs.docker.com/go/wsl2/
+
+##holdfast
+##end
