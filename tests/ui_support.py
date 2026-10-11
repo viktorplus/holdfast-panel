@@ -8,7 +8,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 
 from holdfast_panel.context import AppContext
@@ -61,7 +60,6 @@ def make_ctx(tmp_path, conn_factory=None, servers=(), **extra) -> AppContext:
         storages=StorageStore(tmp_path / "storages.json"),
         library=Library(tmp_path / "templates"),
         get_key=lambda: None,
-        pool=QThreadPool(),
         open_connection=conn_factory
         or (lambda server: FakeConn({"##end": Result(0, COLLECTED, "")})),
         show_error=lambda message: ctx.errors.append(message),

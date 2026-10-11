@@ -23,6 +23,8 @@ from ..ssh import fetch_host_fingerprint
 from ..store import Server, StoreError
 from .add_dialog import AddServerDialog
 from .base import ServerTab
+from .diagnostics_tab import DiagnosticsTab
+from .log_tab import LogTab
 from .monitor_tab import MonitorTab
 from .workers import Task
 
@@ -52,7 +54,9 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tab_list: list[ServerTab] = []
         self.add_tab(MonitorTab(ctx), "Монитор")
-        self.tabs.currentChanged.connect(lambda _: self._refresh_current())
+        self.add_tab(DiagnosticsTab(ctx), "Диагностика")
+        self.add_tab(LogTab(ctx), "Журнал")
+        self.tabs.currentChanged.connect(self._refresh_current)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.table)
@@ -114,7 +118,7 @@ class MainWindow(QMainWindow):
             tab.server = server
         self._refresh_current()
 
-    def _refresh_current(self) -> None:
+    def _refresh_current(self, *_: object) -> None:
         tab = self.tab_list[self.tabs.currentIndex()]
         tab.refresh()
 

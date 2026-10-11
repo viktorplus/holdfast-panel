@@ -6,6 +6,7 @@ with something that answers at once instead of opening a window or a socket.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +32,21 @@ class AppContext:
     open_connection: Callable[[Server], Connection] | None = None
     show_error: Callable[[str], None] = lambda message: None
     confirm: Callable[[str, str], bool] = lambda title, text: False
-    parent_window: object = None
+    _parent: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.open_connection is None:
             self.open_connection = lambda server: connect(server, key=self.get_key())
+
+    @property
+    def parent_window(self):
+        """The main window, held weakly: the window holds this context, and a
+        strong reference back would keep both alive past the QApplication."""
+        return self._parent() if self._parent else None
+
+    @parent_window.setter
+    def parent_window(self, window) -> None:
+        self._parent = weakref.ref(window) if window is not None else None
 
     @property
     def log_path(self) -> Path:
