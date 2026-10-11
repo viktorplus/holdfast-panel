@@ -257,10 +257,14 @@ def test_the_password_is_not_left_in_the_dialog_after_it_was_taken(
 
     monkeypatch.setattr(AddServerDialog, "exec", fake_exec)
     monkeypatch.setattr(main_window, "fetch_host_fingerprint", lambda h, p: "SHA256:x")
+    # The fingerprint question is a modal box; the task that opens it must end
+    # inside this test, or it would open in a later one and wait for nobody.
+    monkeypatch.setattr(MainWindow, "_confirm_host", lambda self, s, fp, box: None)
     ctx = make_ctx(tmp_path)
     window = MainWindow(ctx)
 
     window.add_server()
+    settle(ctx)
 
     assert seen["dialog"].password.text() == ""
 
