@@ -186,7 +186,21 @@ class MainWindow(QMainWindow):
             return
         server.host_fingerprint = fingerprint
         try:
-            self.ctx.servers.add(server)
+            # A server whose key never got installed (wrong password, link lost)
+            # is added again under the same name: it is updated, not refused.
+            unfinished = next(
+                (
+                    s
+                    for s in self.ctx.servers.load()
+                    if s.name == server.name and not s.enrolled
+                ),
+                None,
+            )
+            if unfinished is not None:
+                server.id = unfinished.id
+                self.ctx.servers.update(server)
+            else:
+                self.ctx.servers.add(server)
         except StoreError as exc:
             self._enrol_failed(str(exc), box)
             return

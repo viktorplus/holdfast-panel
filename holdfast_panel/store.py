@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -70,10 +72,28 @@ class _ListStore:
             raise StoreError(f"{self.path} cannot be read: {exc}") from exc
 
     def save(self, records: list) -> None:
+        """Write the whole list: to a temporary file of its own, then replace.
+
+        The temporary name is unique, so two writers never share one; and the
+        replace is retried a few times, because on Windows a virus scanner or the
+        search indexer may hold the target open for a moment.
+        """
         body = json.dumps({self.key: [asdict(r) for r in records]}, indent=2)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, self.path)
+        handle, tmp = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                out.write(body)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, self.path)
+                    return
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.1 * (attempt + 1))
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     def check(self, record) -> None:
         """Raise StoreError if the record must not be stored."""

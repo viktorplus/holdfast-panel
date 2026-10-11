@@ -196,7 +196,9 @@ WORDPRESS = {
     "name": "WordPress + MySQL (Docker)",
     "category": "docker",
     "description": "Проект в /root/<имя>: данные сайта и базы лежат папками внутри "
-    "проекта, поэтому попадают в бэкап без безымянных томов.",
+    "проекта, поэтому попадают в бэкап без безымянных томов. Порт сайта открыт "
+    "наружу, а Docker обходит файрвол ufw. Повторный запуск не меняет пароль уже "
+    "созданной базы: он остаётся прежним.",
     "variables": [
         {"name": "project", "label": "Имя проекта", "pattern": "[a-z][a-z0-9_-]*"},
         {"name": "port", "label": "Порт сайта", "kind": "number", "default": "8080"},
@@ -256,7 +258,8 @@ POSTGRES = {
     "id": "docker-postgres",
     "name": "PostgreSQL (Docker)",
     "category": "docker",
-    "description": "PostgreSQL 16, порт только на localhost, данные папкой в проекте.",
+    "description": "PostgreSQL 16, порт только на localhost, данные папкой в проекте. "
+    "Повторный запуск не меняет пароль уже созданной базы: он остаётся прежним.",
     "variables": [
         {"name": "project", "label": "Имя проекта", "pattern": "[a-z][a-z0-9_-]*"},
         {"name": "port", "label": "Порт", "kind": "number", "default": "5432"},
@@ -295,7 +298,8 @@ PORTAINER = {
     "id": "docker-portainer",
     "name": "Portainer (управление Docker)",
     "category": "docker",
-    "description": "Веб-интерфейс Docker на https, порт 9443.",
+    "description": "Веб-интерфейс Docker на https, порт 9443. Порт открыт наружу, а "
+    "Docker обходит файрвол ufw; доступ к сокету Docker равен правам root.",
     "steps": [
         {
             "title": "Запустить Portainer",
