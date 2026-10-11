@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -61,7 +63,10 @@ class MonitorTab(ServerTab):
         layout.addWidget(self.summary)
         for title, table in (
             ("Диски", self.disks),
-            ("Процессы (по загрузке процессора)", self.processes),
+            (
+                "Процессы (по средней загрузке процессора за время жизни)",
+                self.processes,
+            ),
             ("Контейнеры Docker", self.containers),
         ):
             layout.addWidget(QLabel(f"<b>{title}</b>"))
@@ -103,6 +108,13 @@ class MonitorTab(ServerTab):
 
     def show_stats(self, stats: Stats) -> None:
         self.reading = False
+        problems = (
+            "<br><span style='color:#b26a00'>⚠ "
+            + "; ".join(html.escape(p) for p in stats.problems)
+            + "</span>"
+            if stats.problems
+            else ""
+        )
         swap = (
             f", подкачка {human_bytes(stats.swap_total - stats.swap_free)} "
             f"из {human_bytes(stats.swap_total)}"
@@ -110,13 +122,14 @@ class MonitorTab(ServerTab):
             else ""
         )
         self.summary.setText(
-            f"<b>{stats.os_name}</b>, ядро {stats.kernel}<br>"
+            f"<b>{html.escape(stats.os_name)}</b>, ядро {html.escape(stats.kernel)}<br>"
             f"Работает: {human_uptime(stats.uptime_seconds)} · "
             f"Нагрузка: {stats.load[0]:.2f} / {stats.load[1]:.2f} / {stats.load[2]:.2f} "
             f"на {stats.cpus} ядер · CPU сейчас: {stats.cpu_percent:.0f}%<br>"
             f"Память: занято {human_bytes(stats.mem_total - stats.mem_available)} "
             f"из {human_bytes(stats.mem_total)} ({stats.mem_percent:.0f}%){swap}<br>"
-            f"holdfast: {stats.holdfast_version or 'не установлен'}"
+            f"holdfast: {html.escape(stats.holdfast_version) or 'не установлен'}"
+            + problems
         )
         _fill(
             self.disks,

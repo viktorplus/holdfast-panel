@@ -1,8 +1,11 @@
 """What a server is doing right now: one SSH round trip, one script.
 
 The script only reads (`/proc`, `df`, `ps`, `docker ps`) and prints sections
-that start with `##name`. `parse_stats` turns that text into numbers, and
-tolerates a missing section: a server without Docker simply has no containers.
+that start with `##name`. `parse_stats` turns that text into numbers. A section
+that is missing or does not parse leaves its default and is listed in
+`Stats.problems`, so "could not read the disks" is never shown as "there are no
+disks": a server without Docker simply has no containers, a server whose `df`
+failed is reported as such.
 """
 
 from __future__ import annotations
@@ -13,23 +16,37 @@ from dataclasses import dataclass, field
 from .ssh import Connection, SshError
 
 COLLECT_SCRIPT = r"""
+export LC_ALL=C
 echo '##os'
 ( . /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}" ); uname -r
 echo '##uptime'; cut -d' ' -f1 /proc/uptime
 echo '##load'; cat /proc/loadavg
 echo '##cpus'; nproc
 echo '##stat'; head -n1 /proc/stat; sleep 1; head -n1 /proc/stat
-echo '##mem'; grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo
+echo '##mem'; grep -E '^(MemTotal|MemAvailable|MemFree|Buffers|Cached|SwapTotal|SwapFree):' /proc/meminfo
 echo '##disk'
-df -P -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2
+disks=$(df -P -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null); rc=$?
+printf '%s
+' "$disks" | tail -n +2
+[ "$rc" = 0 ] || echo '##disk-failed'
 echo '##procs'
-ps -eo pid,user:20,pcpu,pmem,comm --sort=-pcpu --no-headers 2>/dev/null | head -n 10
+procs=$(ps -eo pid,user:20,pcpu,pmem,comm --sort=-pcpu --no-headers 2>/dev/null) || echo '##procs-failed'
+printf '%s
+' "$procs" | head -n 10
 echo '##docker'
-docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>/dev/null
+if command -v docker >/dev/null; then
+  docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>/dev/null || echo '##docker-failed'
+fi
 echo '##holdfast'
 command -v holdfast >/dev/null && holdfast version
 echo '##end'
 """
+
+SECTION_FAILED = {
+    "disk-failed": "диски прочитаны не полностью или не прочитаны (df)",
+    "procs-failed": "не удалось прочитать процессы (ps)",
+    "docker-failed": "Docker есть, но не отвечает (нет прав на сокет или демон завис)",
+}
 
 
 @dataclass
@@ -37,10 +54,18 @@ class Disk:
     mount: str
     total: int
     used: int
+    avail: int = -1
+    """Free for an ordinary writer. Not total - used: ext4 keeps reserved blocks."""
 
     @property
     def percent(self) -> float:
-        return 100 * self.used / self.total if self.total else 0.0
+        """Full as `df` shows it: used / (used + available)."""
+        usable = self.used + (self.avail if self.avail >= 0 else self.total - self.used)
+        return 100 * self.used / usable if usable else 0.0
+
+    @property
+    def free(self) -> int:
+        return self.avail if self.avail >= 0 else max(self.total - self.used, 0)
 
 
 @dataclass
@@ -75,6 +100,8 @@ class Stats:
     processes: list[Process] = field(default_factory=list)
     containers: list[Container] = field(default_factory=list)
     holdfast_version: str = ""
+    problems: list[str] = field(default_factory=list)
+    """What could not be read, in words. Empty when everything was."""
 
     @property
     def mem_percent(self) -> float:
@@ -95,11 +122,16 @@ def _sections(text: str) -> dict[str, list[str]]:
 
 
 def _cpu_percent(lines: list[str]) -> float:
-    """Busy share between the two `cpu` lines of /proc/stat, in percent."""
+    """Busy share between the two `cpu` lines of /proc/stat, in percent.
+
+    Only the first eight fields count: `guest` and `guest_nice` are already
+    inside `user` and `nice`, and adding them again overstates a host that runs
+    virtual machines.
+    """
     if len(lines) < 2:
         return 0.0
     try:
-        first, second = ([int(x) for x in line.split()[1:]] for line in lines[:2])
+        first, second = ([int(x) for x in line.split()[1:9]] for line in lines[:2])
     except ValueError:
         return 0.0
     if len(first) < 5 or len(second) < 5:  # not a Linux /proc/stat
@@ -110,52 +142,94 @@ def _cpu_percent(lines: list[str]) -> float:
     return max(0.0, min(100.0, 100 * (total - idle) / total)) if total > 0 else 0.0
 
 
+def _memory(lines: list[str]) -> dict[str, int]:
+    found: dict[str, int] = {}
+    for line in lines:
+        key, _, rest = line.partition(":")
+        found[key] = int(rest.split()[0]) * 1024  # kB in /proc/meminfo
+    return found
+
+
 def parse_stats(text: str) -> Stats:
     s = _sections(text)
     stats = Stats()
-    if s.get("os"):
-        stats.os_name = s["os"][0]
-        stats.kernel = s["os"][1] if len(s["os"]) > 1 else ""
-    if s.get("uptime"):
-        stats.uptime_seconds = float(s["uptime"][0])
-    if s.get("load"):
-        one, five, fifteen = (float(x) for x in s["load"][0].split()[:3])
-        stats.load = (one, five, fifteen)
-    if s.get("cpus"):
-        stats.cpus = max(1, int(s["cpus"][0]))
-    stats.cpu_percent = _cpu_percent(s.get("stat", []))
 
-    meminfo = {}
-    for line in s.get("mem", []):
-        key, _, rest = line.partition(":")
-        meminfo[key] = int(rest.split()[0]) * 1024  # kB in /proc/meminfo
-    stats.mem_total = meminfo.get("MemTotal", 0)
-    stats.mem_available = meminfo.get("MemAvailable", 0)
-    stats.swap_total = meminfo.get("SwapTotal", 0)
-    stats.swap_free = meminfo.get("SwapFree", 0)
+    def attempt(what: str, fn) -> None:
+        """Parse one section; a failure leaves its defaults and is reported."""
+        try:
+            fn()
+        except (ValueError, IndexError, TypeError):
+            stats.problems.append(f"не удалось разобрать: {what}")
 
-    seen = set()
-    for line in s.get("disk", []):
-        parts = line.split()
-        # filesystem 1B-blocks used available capacity mount
-        if len(parts) < 6 or not parts[1].isdigit():
-            continue
-        mount = " ".join(parts[5:])
-        if parts[0].startswith("/dev/loop"):
-            continue  # snap and other read-only images are full by design
-        if parts[0] in seen:  # the same device mounted twice (bind mounts)
-            continue
-        seen.add(parts[0])
-        stats.disks.append(Disk(mount, int(parts[1]), int(parts[2])))
+    def os_section() -> None:
+        if s.get("os"):
+            stats.os_name = s["os"][0]
+            stats.kernel = s["os"][1] if len(s["os"]) > 1 else ""
 
-    for line in s.get("procs", []):
-        parts = line.split(None, 4)
-        if len(parts) == 5:
-            stats.processes.append(
-                Process(
-                    int(parts[0]), parts[1], float(parts[2]), float(parts[3]), parts[4]
-                )
+    def uptime_section() -> None:
+        if s.get("uptime"):
+            stats.uptime_seconds = float(s["uptime"][0])
+
+    def load_section() -> None:
+        if s.get("load"):
+            one, five, fifteen = (float(x) for x in s["load"][0].split()[:3])
+            stats.load = (one, five, fifteen)
+
+    def cpus_section() -> None:
+        if s.get("cpus"):
+            stats.cpus = max(1, int(s["cpus"][0]))
+
+    def mem_section() -> None:
+        mem = _memory(s.get("mem", []))
+        stats.mem_total = mem.get("MemTotal", 0)
+        if "MemAvailable" in mem:
+            stats.mem_available = mem["MemAvailable"]
+        elif stats.mem_total:
+            # kernels before 3.14 have no MemAvailable: free + buffers + cache
+            stats.mem_available = sum(
+                mem.get(k, 0) for k in ("MemFree", "Buffers", "Cached")
             )
+        stats.swap_total = mem.get("SwapTotal", 0)
+        stats.swap_free = mem.get("SwapFree", 0)
+
+    def disks_section() -> None:
+        seen = set()
+        for line in s.get("disk", []):
+            parts = line.split()
+            # filesystem 1B-blocks used available capacity mount
+            if len(parts) < 6 or not parts[1].isdigit():
+                continue
+            if parts[0].startswith("/dev/loop"):
+                continue  # snap and other read-only images are full by design
+            if parts[0] in seen:  # the same device mounted twice (bind mounts)
+                continue
+            seen.add(parts[0])
+            stats.disks.append(
+                Disk(" ".join(parts[5:]), int(parts[1]), int(parts[2]), int(parts[3]))
+            )
+
+    def procs_section() -> None:
+        for line in s.get("procs", []):
+            parts = line.split(None, 4)
+            if len(parts) == 5:
+                stats.processes.append(
+                    Process(
+                        int(parts[0]),
+                        parts[1],
+                        float(parts[2]),
+                        float(parts[3]),
+                        parts[4],
+                    )
+                )
+
+    attempt("система", os_section)
+    attempt("время работы", uptime_section)
+    attempt("нагрузка", load_section)
+    attempt("число ядер", cpus_section)
+    stats.cpu_percent = _cpu_percent(s.get("stat", []))
+    attempt("память", mem_section)
+    attempt("диски", disks_section)
+    attempt("процессы", procs_section)
 
     for line in s.get("docker", []):
         if line.count("|") != 2:  # a "docker: not found" hint, not a container
@@ -166,6 +240,9 @@ def parse_stats(text: str) -> Stats:
 
     if s.get("holdfast"):
         stats.holdfast_version = s["holdfast"][0].strip()
+    for marker, words in SECTION_FAILED.items():
+        if marker in s:
+            stats.problems.append(words)
     return stats
 
 

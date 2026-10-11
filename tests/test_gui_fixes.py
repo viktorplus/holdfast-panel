@@ -263,3 +263,34 @@ def test_the_password_is_not_left_in_the_dialog_after_it_was_taken(
     window.add_server()
 
     assert seen["dialog"].password.text() == ""
+
+
+# ---- text from the server is text, not markup ------------------------------------------------
+
+
+def test_a_hostile_os_name_does_not_become_html_in_the_monitor(tmp_path):
+    hostile = COLLECTED.replace(
+        "Debian GNU/Linux 13 (trixie)", "<img src='http://evil/x.png'><b>owned</b>"
+    )
+    ctx = make_ctx(
+        tmp_path,
+        conn_factory=lambda s: FakeConn({"##end": Result(0, hostile, "")}),
+        servers=[enrolled()],
+    )
+    tab = MonitorTab(ctx)
+    tab.server = ctx.servers.load()[0]
+    tab.refresh()
+    settle(ctx)
+
+    shown = tab.summary.text()
+    assert "<img" not in shown and "&lt;img" in shown
+
+
+def test_what_could_not_be_read_is_shown_not_hidden(tmp_path):
+    ctx = make_ctx(tmp_path, servers=[enrolled()])  # the real Debian output: no Docker
+    tab = MonitorTab(ctx)
+    tab.server = ctx.servers.load()[0]
+    tab.refresh()
+    settle(ctx)
+
+    assert "Docker есть, но не отвечает" in tab.summary.text()

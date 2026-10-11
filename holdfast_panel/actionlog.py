@@ -7,9 +7,14 @@ short description ("template holdfast-bootstrap"), not commands or values.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+MAX_BYTES = 5 * 1024 * 1024
+_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -37,8 +42,11 @@ def record(
         detail,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
+    with _LOCK:  # several operations may finish at once
+        if path.exists() and path.stat().st_size > MAX_BYTES:
+            os.replace(path, path.with_suffix(".1.jsonl"))  # one older file is kept
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry.__dict__, ensure_ascii=False) + "\n")
 
 
 def read(path: Path, limit: int = 200, server: str | None = None) -> list[Entry]:
@@ -46,7 +54,8 @@ def read(path: Path, limit: int = 200, server: str | None = None) -> list[Entry]
     if not path.exists():
         return []
     entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # a damaged file must not stop the log from being read at all
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             entry = Entry(**json.loads(line))
         except (ValueError, TypeError):

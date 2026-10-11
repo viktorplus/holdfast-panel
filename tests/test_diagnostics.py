@@ -129,7 +129,8 @@ def healthy():
             0, journal(True, "2026-10-11T02:30:00+00:00"), ""
         ),
         "df -P": Result(0, f"/dev/sda1 {100 * gib} {20 * gib} {80 * gib} 20% /\n", ""),
-        "systemctl is-active cron": Result(0, "active\n", ""),
+        "(systemctl is-active cron": Result(0, "cron\n", ""),
+        "cat /etc/holdfast/holdfast.toml": Result(0, "", ""),
         "holdfast backup --dry-run": Result(0, "mode: auto\n", ""),
         "holdfast audit --json": Result(
             0,
@@ -140,11 +141,11 @@ def healthy():
 
 
 def test_a_healthy_server_is_ok_on_every_line():
-    diagnosis = diagnose(Canned(healthy()))
+    diagnosis = diagnose(Canned(healthy()), with_audit=True)
     assert {i.status for i in diagnosis.items} == {OK}
     by_name = {i.name: i.status for i in diagnosis.items}
     assert by_name["Последний бэкап"] == OK
-    assert by_name["Планировщик (cron)"] == OK
+    assert by_name["Расписание бэкапа"] == OK
     assert by_name["Состав копии (--dry-run)"] == OK
 
 
@@ -159,12 +160,14 @@ def test_a_server_without_holdfast_is_a_failure_and_nothing_else_is_asked():
 
 def test_a_stopped_cron_and_a_refusing_dry_run_are_reported():
     answers = healthy()
-    answers["systemctl is-active cron"] = Result(3, "inactive\n", "")
+    answers["(systemctl is-active cron"] = Result(0, "none\n", "")
     answers["holdfast backup --dry-run"] = Result(
         0, "mode: auto\nwarnings:\n  the backup would refuse: no age on PATH\n", ""
     )
     by_name = {i.name: i for i in diagnose(Canned(answers)).items}
 
-    assert by_name["Планировщик (cron)"].status == FAIL
+    # not a failure: holdfast's docs allow a systemd timer, and a schedule can
+    # live somewhere this check does not look
+    assert by_name["Расписание бэкапа"].status == WARN
     assert by_name["Состав копии (--dry-run)"].status == WARN
     assert "no age" in by_name["Состав копии (--dry-run)"].detail

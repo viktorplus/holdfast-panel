@@ -15,25 +15,31 @@ from holdfast_panel.store import Server
 FIXTURE = Path(__file__).parent / "fixtures" / "collected_debian_wsl.txt"
 
 
-def test_real_output_from_a_debian_machine_is_understood():
+def test_real_output_from_a_debian_machine_is_understood_with_exact_numbers():
     stats = parse_stats(FIXTURE.read_text(encoding="utf-8"))
 
     assert stats.os_name == "Debian GNU/Linux 13 (trixie)"
     assert stats.kernel.startswith("6.")
     assert stats.cpus == 8
-    assert stats.load == (0.35, 0.41, 0.52)
+    assert stats.load == (0.60, 0.37, 0.38)
     assert stats.mem_total == 16263540 * 1024
-    assert 5 < stats.mem_percent < 10
-    # 18 of 22 non-idle jiffies: the delta between the two /proc/stat lines.
-    assert 0 < stats.cpu_percent < 100
+    # (16263540 - 15128312) / 16263540 kB: the exact figure, not "somewhere near"
+    assert round(stats.mem_percent, 2) == 6.98
+    # between the two /proc/stat lines: 805 jiffies passed, 727 of them idle
+    assert round(stats.cpu_percent, 1) == 9.7
     assert stats.uptime_seconds > 400000
-    assert [p.command for p in stats.processes][:2] == ["systemd", "bash"]
-    assert stats.processes[0].pid == 1 and stats.processes[0].cpu == 6.6
+    assert [(p.pid, p.command) for p in stats.processes][:2] == [
+        (249, "ps"),
+        (1, "systemd"),
+    ]
+    assert stats.processes[1].cpu == 38.5
     assert not any(d.mount.endswith("cli-tools") for d in stats.disks)  # loop image
     root = next(d for d in stats.disks if d.mount == "/")
     assert round(root.percent) == 1
-    # "docker: not found" hint text must not become a container
+    # a "docker: not found" hint is not a container, and a Docker that does not
+    # answer is said so rather than shown as an empty list
     assert stats.containers == []
+    assert any("Docker есть, но не отвечает" in p for p in stats.problems)
     assert stats.holdfast_version == ""
 
 

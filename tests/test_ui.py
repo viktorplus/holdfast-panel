@@ -70,7 +70,7 @@ def test_selecting_a_server_fills_the_monitor_with_real_debian_output(tmp_path):
     # the default checks: every list the screen shows renders non-empty
     assert monitor.disks.rowCount() >= 1
     assert monitor.processes.rowCount() == 10
-    assert monitor.processes.item(0, 4).text() == "systemd"
+    assert monitor.processes.item(0, 4).text() == "ps"  # the first row of the fixture
     assert monitor.containers.rowCount() == 0  # that machine has no Docker
     assert ctx.errors == []
 

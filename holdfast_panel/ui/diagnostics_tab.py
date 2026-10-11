@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -32,10 +33,15 @@ class DiagnosticsTab(ServerTab):
             ["Группа", "Проверка безопасности", "Статус", "Подробности"]
         )
         self.run_button = QPushButton("Запустить диагностику")
+        self.with_audit = QCheckBox(
+            "Включить аудит безопасности (он обновляет состояние, с которым "
+            "сравнивает ночной аудит)"
+        )
         self.run_button.clicked.connect(self.run_diagnostics)
 
         bar = QHBoxLayout()
         bar.addWidget(self.run_button)
+        bar.addWidget(self.with_audit)
         bar.addStretch()
         layout = QVBoxLayout(self)
         layout.addLayout(bar)
@@ -62,12 +68,13 @@ class DiagnosticsTab(ServerTab):
         server = self.server
         if server is None or not server.enrolled:
             return
+        audit = self.with_audit.isChecked()
         self.run_button.setEnabled(False)
         self.title.setText("Проверяю… (аудит может занять до минуты)")
 
         def run() -> Diagnosis:
             with self.ctx.open_connection(server) as conn:
-                return diagnose(conn, server.backup_root)
+                return diagnose(conn, server.backup_root, with_audit=audit)
 
         def failed(message: str) -> None:
             self.run_button.setEnabled(True)

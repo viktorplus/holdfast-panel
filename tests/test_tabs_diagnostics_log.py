@@ -31,7 +31,8 @@ def server_answers(audit_findings):
         "date -u": Result(0, f"{NOW:.0f}\n", ""),
         "cat /var/lib/holdfast/jobs/backup.json": Result(0, journal, ""),
         "df -P": Result(0, f"/dev/sda1 {100 * GIB} {20 * GIB} {80 * GIB} 20% /\n", ""),
-        "systemctl is-active cron": Result(3, "inactive\n", ""),
+        "(systemctl is-active cron": Result(0, "none\n", ""),
+        "cat /etc/holdfast/holdfast.toml": Result(0, "", ""),
         "holdfast backup --dry-run": Result(0, "mode: auto\n", ""),
         "holdfast audit --json": Result(
             1, json.dumps({"findings": audit_findings}), ""
@@ -68,13 +69,16 @@ def test_diagnostics_fills_both_tables_and_colours_the_problems(tmp_path):
     ctx, tab = tab_with(tmp_path, lambda s: FakeConn(server_answers(findings)))
 
     assert tab.items.rowCount() == 0  # nothing runs until asked
+    tab.with_audit.setChecked(True)  # the audit is opt-in: it saves a baseline
     tab.run_diagnostics()
     settle(ctx)
 
     names = [tab.items.item(r, 0).text() for r in range(tab.items.rowCount())]
-    assert "Планировщик (cron)" in names and "Последний бэкап" in names
-    cron = names.index("Планировщик (cron)")
-    assert tab.items.item(cron, 1).text() == "✖ проблема"
+    assert "Расписание бэкапа" in names and "Последний бэкап" in names
+    schedule = names.index("Расписание бэкапа")
+    assert tab.items.item(schedule, 1).text() == "▲ внимание"
+    audit = names.index("Аудит безопасности (holdfast audit)")
+    assert tab.items.item(audit, 1).text() == "✖ проблема"  # failed checks found
     assert tab.title.text() == "Итог: ✖ проблема"
     # only what needs attention is listed, failures first
     assert [tab.audit.item(r, 1).text() for r in range(tab.audit.rowCount())] == [

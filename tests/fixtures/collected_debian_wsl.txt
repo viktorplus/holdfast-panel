@@ -2,37 +2,40 @@
 Debian GNU/Linux 13 (trixie)
 6.18.40.1-microsoft-standard-WSL2
 ##uptime
-489808.95
+495145.25
 ##load
-0.35 0.41 0.52 1/366 251
+0.60 0.37 0.38 6/379 238
 ##cpus
 8
 ##stat
-cpu  5976286 0 5004948 377156617 833158 0 1787176 0 0 0
-cpu  5976304 0 5004960 377157381 833158 0 1787180 0 0 0
+cpu  6080969 0 5108310 381159818 843290 0 1822278 0 0 0
+cpu  6080994 0 5108357 381160542 843293 0 1822284 0 0 0
 ##mem
 MemTotal:       16263540 kB
-MemAvailable:   15118588 kB
+MemFree:          116624 kB
+MemAvailable:   15128312 kB
+Buffers:          629052 kB
+Cached:         13984232 kB
 SwapTotal:       4194304 kB
-SwapFree:        4110844 kB
+SwapFree:        4106732 kB
 ##disk
 /dev/loop0         819689472     819689472             0     100% /mnt/wsl/docker-desktop/cli-tools
-drivers        1999298883584 1152894038016  846404845568      58% /usr/lib/wsl/drivers
-/dev/sdf       1081101176832   10883293184 1015225528320       2% /
+drivers        1999298883584 1155114602496  844184281088      58% /usr/lib/wsl/drivers
+/dev/sdf       1081101176832   10891685888 1015217135616       2% /
 rootfs            8322392064       3432448    8318959616       1% /init
-C:\            1999298883584 1152894038016  846404845568      58% /mnt/c
-E:\             126934315008   82903969792   44030345216      66% /mnt/e
+C:\            1999298883584 1155114602496  844184281088      58% /mnt/c
+E:\             126934315008   82907029504   44027285504      66% /mnt/e
 ##procs
-      1 root                  6.6  0.0 systemd
-    247 user                  2.7  0.0 bash
-     79 root                  2.1  0.0 systemd-udevd
-     41 root                  1.7  0.1 systemd-journal
-    197 user                  0.8  0.0 systemd
-    162 root                  0.4  0.0 systemd-logind
-    212 user                  0.2  0.0 bash
-    160 messagebus            0.2  0.0 dbus-daemon
-    159 root                  0.1  0.0 cron
-    187 root                  0.0  0.0 login
+    249 user                  200  0.0 ps
+      1 root                 38.5  0.0 systemd
+    200 user                 12.9  0.0 systemd
+     47 root                 12.8  0.1 systemd-journal
+     82 root                 12.3  0.0 systemd-udevd
+    216 user                 10.4  0.0 bash
+    131 root                  5.1  0.0 (udev-worker)
+    153 root                  4.9  0.0 systemd-logind
+    149 messagebus            4.4  0.0 dbus-daemon
+    113 root                  4.1  0.0 (udev-worker)
 ##docker
 
 The command 'docker' could not be found in this WSL 2 distro.
@@ -42,5 +45,6 @@ For details about using Docker Desktop with WSL 2, visit:
 
 https://docs.docker.com/go/wsl2/
 
+##docker-failed
 ##holdfast
 ##end

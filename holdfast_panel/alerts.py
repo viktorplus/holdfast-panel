@@ -44,6 +44,9 @@ def evaluate(
             )
     if diagnosis is not None:
         for item in diagnosis.items:
+            # the monitor already reports a full disk; the same disk is not said twice
+            if item.name == "Место под снимки" and stats is not None and stats.disks:
+                continue
             if item.status in (FAIL, WARN):
                 alerts.append(Alert(item.status, f"{item.name}: {item.detail}"))
     return alerts
