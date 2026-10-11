@@ -42,6 +42,7 @@ class ServerTab(QWidget):
         self.ctx = ctx
         self.server: Server | None = None
         self._tasks: list[Task] = []  # kept: a Task must outlive its signals
+        self._latest: dict[str, object] = {}
 
     def refresh(self) -> None:
         """Reload what this tab shows for the current server."""
@@ -51,20 +52,32 @@ class ServerTab(QWidget):
         fn: Callable[[], Any],
         done: Callable[[Any], None],
         failed: Callable[[str], None] | None = None,
+        key: str = "refresh",
     ) -> None:
-        """Run `fn` off the GUI thread; `done`/`failed` run back on it."""
+        """Run `fn` off the GUI thread; `done`/`failed` run back on it.
+
+        Only the newest call for a `key` is heard: if the user switches the
+        view while an older request is still on its way, the older answer is
+        dropped instead of overwriting the newer one.
+        """
         server = self.server
+        token = object()
+        self._latest[key] = token
         task = Task(fn)
         self._tasks.append(task)
 
+        def current() -> bool:
+            # the user may have picked another server, or asked again since
+            return self.server is server and self._latest.get(key) is token
+
         def finish(result: Any) -> None:
             self._tasks.remove(task)
-            if self.server is server:  # the user may have picked another server
+            if current():
                 done(result)
 
         def fail(message: str) -> None:
             self._tasks.remove(task)
-            if self.server is server:
+            if current():
                 (failed or self.ctx.show_error)(message)
 
         task.signals.done.connect(finish)

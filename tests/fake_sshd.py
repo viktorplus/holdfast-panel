@@ -77,10 +77,13 @@ class _Handler(paramiko.ServerInterface):
                 check=False,
                 env={**os.environ, "HOME": str(self.home)},
             )
-            channel.sendall(done.stdout)
-            channel.sendall_stderr(done.stderr)
-            channel.send_exit_status(done.returncode)
-            channel.close()
+            try:
+                channel.sendall(done.stdout)
+                channel.sendall_stderr(done.stderr)
+                channel.send_exit_status(done.returncode)
+                channel.close()
+            except (EOFError, OSError):
+                pass  # the client already hung up: nobody is waiting for this
 
         threading.Thread(target=work, daemon=True).start()
         return True

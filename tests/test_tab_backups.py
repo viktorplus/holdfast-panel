@@ -362,3 +362,41 @@ def test_the_storages_dialog_adds_lists_and_removes(tmp_path):
 
 def test_the_first_place_is_always_the_server():
     assert SERVER == "server"
+
+
+# ---- an old answer must not overwrite a newer one --------------------------------
+
+
+class Slow(FakeConn):
+    """Holds the server listing until released, as a slow link would."""
+
+    hold = None
+
+    def run(self, command, timeout=60):
+        if self.hold is not None and "for d in /opt/backups" in command:
+            self.hold.wait(10)
+        return super().run(command, timeout)
+
+
+def test_a_slow_old_listing_does_not_overwrite_the_newer_one(tmp_path):
+    import threading
+    import time
+
+    ctx, tab, conn = build(tmp_path, conn=Slow(answers()))
+    ctx.storages.add(Storage(name="Ноутбук", kind="pc", location=str(FIXTURES)))
+    tab._fill_where()
+    conn.hold = threading.Event()
+
+    tab.refresh()  # the server listing: held back
+    tab.where.setCurrentIndex(1)  # then the folder here: answers at once
+    deadline = time.monotonic() + 5
+    while tab.table.rowCount() != 1 and time.monotonic() < deadline:
+        application().processEvents()
+        time.sleep(0.01)
+    assert tab.table.rowCount() == 1
+
+    conn.hold.set()  # now the old answer (2 snapshots) arrives
+    settle(ctx)
+
+    assert tab.table.rowCount() == 1
+    assert tab.current_place()[0] == "pc"
