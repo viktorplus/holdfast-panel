@@ -148,11 +148,18 @@ def test_bringing_a_snapshot_back_checks_its_checksums():
     backups.pull_from_remote(
         conn, "shared:b", "web-1", "20260920-231500", "/opt/backups", lambda t: None
     )
+    guard, copy, check, move = conn.sent
+    assert "exit 17" in guard and "/opt/backups/.20260920-231500.part" in guard
+    # copied into a hidden folder, never straight into the final name
     assert (
-        "rclone copy shared:b/web-1/20260920-231500 /opt/backups/20260920-231500"
-        in conn.sent[0]
+        "rclone copy shared:b/web-1/20260920-231500 /opt/backups/.20260920-231500.part"
+        in copy
     )
-    assert conn.sent[1].endswith("sha256sum -c SHA256SUMS")
+    assert check.endswith("sha256sum -c SHA256SUMS")
+    assert move == (
+        "test ! -e /opt/backups/20260920-231500 && "
+        "mv /opt/backups/.20260920-231500.part /opt/backups/20260920-231500"
+    )
 
 
 def test_a_failed_copy_is_not_checked_as_if_it_had_worked():

@@ -204,25 +204,34 @@ def test_a_new_server_gets_projects_then_compose_then_the_rest(key):
     )
 
     assert outcome.ok and outcome.key_removed and server.files == {}
-    cmds = streamed(server)
-    project, up, wait, _sleep, full = cmds
+    verify, project, up, wait, full = streamed(server)
+    assert (
+        "restore verify" in verify
+    )  # checked before the question and before any write
     assert "--component project-myapp" in project and "--no-stop" in project
     assert "--from-other-host" in project and "--yes" in project
-    assert up == "cd /root/myapp && docker compose -p myapp up -d"
-    assert "docker compose -p myapp ps --status running -q" in wait
+    # No `-p`: the name compose derives from the folder is the one the volumes
+    # in the snapshot were created under. Forcing another makes empty volumes.
+    assert up == "cd /root/myapp && docker compose up -d"
+    assert "-p " not in up and "docker compose ps --status running -q" in wait
+    assert not any(c.startswith("sleep") for c in streamed(server))
     assert "--component" not in full and full.endswith("--yes")
     assert "--from-other-host" in full
     assert "/root/myapp" in asked[0] and "перезаписаны" in asked[0]
 
 
-def test_declining_the_new_server_summary_touches_nothing_not_even_the_key(key):
+def test_declining_the_new_server_summary_writes_nothing_and_the_key_is_gone(key):
     server = Server()
     outcome = recover_new_server(
         server, SNAP, info("project-myapp"), key, confirm=lambda t: False
     )
 
     assert not outcome.ok and outcome.stage == "confirm"
-    assert server.log == []
+    assert [c for c in streamed(server)] and all(
+        "restore verify" in c for c in streamed(server)
+    )  # only the check ran
+    assert not any("--yes" in c or "docker compose" in c for c in server.commands())
+    assert server.files == {} and outcome.key_removed
 
 
 def test_a_snapshot_without_a_project_cannot_start_a_new_server(key):
@@ -236,7 +245,7 @@ def test_a_snapshot_without_a_project_cannot_start_a_new_server(key):
 
 
 def test_compose_failing_stops_before_the_databases_are_loaded(key):
-    server = Server(fail={"docker compose -p myapp up": 1})
+    server = Server(fail={"docker compose up": 1})
     outcome = recover_new_server(
         server, SNAP, info("project-myapp"), key, confirm=lambda t: True
     )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,6 +31,10 @@ class Server:
 
 class StoreError(Exception):
     pass
+
+
+SPEC_PATTERN = r"[A-Za-z0-9_.-]+:[^\s'\"`$\;|&<>]*"
+"""An rclone path, `remote:folder`: no whitespace, quotes or shell characters."""
 
 
 @dataclass
@@ -105,5 +110,7 @@ class StorageStore(_ListStore):
             raise StoreError(f"kind must be pc or remote, not {record.kind!r}")
         if not record.name.strip() or not record.location.strip():
             raise StoreError("a storage needs a name and a location")
-        if record.kind == "remote" and ":" not in record.location:
-            raise StoreError("a remote location looks like remote:folder")
+        if record.kind == "remote" and not re.fullmatch(SPEC_PATTERN, record.location):
+            raise StoreError(
+                "a remote location looks like remote:folder, without spaces or quotes"
+            )

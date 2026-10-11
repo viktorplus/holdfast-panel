@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import shlex
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,7 +37,20 @@ def toml_value(value: str | list[str]) -> str:
 
 
 def set_section_key(text: str, section: str, key: str, value: str | list[str]) -> str:
-    """Set `key` inside `[section]`, leaving every other line as it was."""
+    """Set `key` inside `[section]`, leaving every other line as it was.
+
+    A file with Windows line endings keeps them: the new lines get the same.
+    """
+    crlf = "\r\n" in text
+    new = _set_section_key(text.replace("\r\n", "\n"), section, key, value)
+    return new.replace("\n", "\r\n") if crlf else new
+
+
+def _set_section_key(text: str, section: str, key: str, value: str | list[str]) -> str:
+    try:
+        before = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigEditError(f"the file is not valid TOML as it is: {exc}") from exc
     lines = text.split("\n")
     header = re.compile(rf"^\[{re.escape(section)}\]\s*(#.*)?$")
     start = next((i for i, line in enumerate(lines) if header.match(line)), None)
@@ -87,6 +101,18 @@ def set_section_key(text: str, section: str, key: str, value: str | list[str]) -
     if parsed.get(section, {}).get(key) != value:
         raise ConfigEditError(
             f"could not set {section}.{key} safely; edit the file by hand"
+        )
+    # The proof is not only that the key says what was meant: nothing else moved.
+    for tree in (before, parsed):
+        tree.get(section, {}).pop(key, None)
+        if tree.get(section) == {}:
+            del tree[
+                section
+            ]  # a section made only for this key is not "something else"
+    if before != parsed:
+        raise ConfigEditError(
+            f"the edit of {section}.{key} would change something else; "
+            "edit the file by hand"
         )
     return new
 
@@ -154,7 +180,7 @@ def diff(old: str, new: str) -> str:
 
 
 def read_config(conn: Connection, path: str = CONFIG_PATH) -> str:
-    result = conn.run(f"cat {path}")
+    result = conn.run(f"cat {shlex.quote(path)}")
     if not result.ok:
         raise ConfigEditError(f"cannot read {path}: {result.err.strip()}")
     return result.out
@@ -165,46 +191,78 @@ class SaveResult:
     backup_path: str
     dry_run: str
     rolled_back: bool = False
+    rollback_failed: bool = False
     message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not (self.rolled_back or self.rollback_failed)
 
 
 def save_config(
     conn: Connection,
     new_text: str,
     *,
+    expected: str | None = None,
     path: str = CONFIG_PATH,
     on_text: Callable[[str], None] = lambda text: None,
 ) -> SaveResult:
     """Write the file, keeping the old one, and undo it if the backup stops working.
 
-    A copy `holdfast.toml.bak-<time>` is made first. After the write, `backup
-    --dry-run` must still work *if it worked before*: a server whose dry-run was
-    already failing is not blamed on this edit.
+    `expected` is the text the edit started from: if the file on the server is
+    different now (someone, or another panel, changed it), nothing is written.
+    A copy `holdfast.toml.bak-<time>` is made first and keeps the original mode
+    and owner. After the write, `backup --dry-run` must still work *if it worked
+    before*: a server whose dry-run was already failing is not blamed on this
+    edit. "Works" is only "does not stop with an error": holdfast prints
+    problems it would refuse over as warnings, so read the plan afterwards.
     """
     found = problems(new_text)
     if found:
         raise ConfigEditError("; ".join(found))
+    if expected is not None and read_config(conn, path) != expected:
+        raise ConfigEditError(
+            "the file on the server has changed since it was loaded; load it "
+            "again and repeat the edit (nothing was written)"
+        )
 
+    q = shlex.quote
     worked_before = conn.run("holdfast backup --dry-run", timeout=180).ok
-    stamp = conn.run("date +%Y%m%d-%H%M%S").out.strip()
+    stamp = conn.run("date +%Y%m%d-%H%M%S-%N").out.strip()
     backup = f"{path}.bak-{stamp}"
-    if not conn.run(f"cp -p {path} {backup}").ok:
+    if not conn.run(f"cp -p {q(path)} {q(backup)}").ok:
         raise ConfigEditError(f"could not make a copy of {path}; nothing was changed")
 
     staged = f"{path}.new"
-    conn.put_bytes(staged, new_text.encode("utf-8"), mode="600")
-    if not conn.run(f"mv -f {staged} {path}").ok:
-        conn.run(f"rm -f {staged}")
+    try:
+        conn.put_bytes(staged, new_text.encode("utf-8"), mode="600")
+        # the new file is made like the old one: same mode, same owner
+        conn.run(f"chmod --reference={q(backup)} {q(staged)}")
+        conn.run(f"chown --reference={q(backup)} {q(staged)}")
+        replaced = conn.run(f"mv -f {q(staged)} {q(path)}")
+    except Exception:
+        conn.run(f"rm -f {q(staged)}")
+        raise
+    if not replaced.ok:
+        conn.run(f"rm -f {q(staged)}")
         raise ConfigEditError(f"could not replace {path}; the old file is untouched")
 
     dry = conn.run("holdfast backup --dry-run", timeout=180)
     on_text(dry.out)
     if worked_before and not dry.ok:
-        conn.run(f"cp -p {backup} {path}")
+        reason = dry.err.strip() or dry.out
+        if conn.run(f"cp -p {q(backup)} {q(path)}").ok:
+            return SaveResult(
+                backup,
+                reason,
+                rolled_back=True,
+                message="после правки бэкап перестал запускаться; файл возвращён как был",
+            )
         return SaveResult(
             backup,
-            dry.err.strip() or dry.out,
-            rolled_back=True,
-            message="после правки бэкап перестал запускаться; файл возвращён как был",
+            reason,
+            rollback_failed=True,
+            message=f"бэкап перестал запускаться, а вернуть прежний файл не удалось: "
+            f"копия лежит в {backup}",
         )
     return SaveResult(backup, dry.out, message="сохранено")

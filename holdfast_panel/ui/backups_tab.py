@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shlex
+import tomllib
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -35,10 +37,27 @@ SERVER = "server"
 def host_label_of(
     conn: Connection, config_path: str = "/etc/holdfast/holdfast.toml"
 ) -> str:
-    """The machine's own name, as holdfast knows it ('' when it cannot be read)."""
-    result = conn.run(f"grep -m1 '^host_label' {config_path} 2>/dev/null")
-    _, _, value = result.out.partition("=")
-    return value.strip().strip('"')
+    """The machine's own name, as holdfast knows it ('' when it cannot be read).
+
+    The file is parsed as TOML rather than searched with grep: a comment after
+    the value, single quotes, or another key that starts the same way would each
+    give a wrong name, and a wrong name switches off holdfast's check that a
+    snapshot belongs to this machine.
+    """
+    result = conn.run(f"cat {shlex.quote(config_path)} 2>/dev/null")
+    try:
+        return str(tomllib.loads(result.out).get("host_label", "") or "")
+    except tomllib.TOMLDecodeError:
+        return ""
+
+
+def other_machine_note(snapshot_label: str, this_label: str) -> str:
+    """Said in the confirmation whenever the wrong-machine guard is switched off."""
+    return (
+        f"⚠ Снимок снят на другой машине ({snapshot_label}), а эта называется "
+        f"{this_label}. Подтверждая, вы разрешаете восстановить чужой снимок "
+        "(--from-other-host).\n\n"
+    )
 
 
 class BackupsTab(OperationTab):
@@ -280,15 +299,17 @@ class BackupsTab(OperationTab):
                 directory = self._bring_to_server(
                     conn, info, kind, location, server.backup_root, on_text, on_stage
                 )
-                from_other = bool(
-                    self.label and info.host_label and info.host_label != self.label
-                )
+                # read here, in the worker, from the server itself: not from state
+                # the window left from some earlier listing
+                this = host_label_of(conn)
+                from_other = bool(this and info.host_label and info.host_label != this)
+                note = other_machine_note(info.host_label, this) if from_other else ""
                 return restore_snapshot(
                     conn,
                     directory,
                     key,
                     from_other_host=from_other,
-                    confirm=lambda plan: self.ask("Восстановление: план", plan),
+                    confirm=lambda plan: self.ask("Восстановление: план", note + plan),
                     on_text=on_text,
                     on_stage=on_stage,
                 )
@@ -310,9 +331,9 @@ class BackupsTab(OperationTab):
                 directory = self._bring_to_server(
                     conn, info, kind, location, server.backup_root, on_text, on_stage
                 )
-                from_other = bool(
-                    self.label and info.host_label and info.host_label != self.label
-                )
+                this = host_label_of(conn)
+                from_other = bool(this and info.host_label and info.host_label != this)
+                note = other_machine_note(info.host_label, this) if from_other else ""
                 on_stage("Новый сервер из снимка")
                 return recover_new_server(
                     conn,
@@ -320,7 +341,9 @@ class BackupsTab(OperationTab):
                     info,
                     key,
                     from_other_host=from_other,
-                    confirm=lambda text: self.ask("Новый сервер из снимка", text),
+                    confirm=lambda text: self.ask(
+                        "Новый сервер из снимка", note + text
+                    ),
                     on_text=on_text,
                     on_stage=on_stage,
                 )

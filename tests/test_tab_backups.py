@@ -20,11 +20,12 @@ def sections(*names):
 
 def answers(**override):
     base = {
-        "grep -m1 '^host_label'": Result(0, 'host_label = "web-1"\n', ""),
+        "cat /etc/holdfast/holdfast.toml": Result(0, 'host_label = "web-1"\n', ""),
         "for d in /opt/backups": Result(
             0, sections("20260921-020000", "20260920-231500"), ""
         ),
-        "rclone lsf": Result(0, sections("20260919-020000"), ""),
+        "rclone lsf": Result(0, "20260919-020000/\n", ""),
+        "rclone cat": Result(0, sections("20260919-020000"), ""),
         "test -e": Result(1, "", ""),  # not on the server yet
         "holdfast backup --dry-run": Result(
             0, "mode: auto\nproject-myapp (path)\n", ""
@@ -282,12 +283,13 @@ def test_a_new_server_is_brought_up_from_a_snapshot(tmp_path, key_file):
     settle(ctx)
 
     seen = commands(conn)
-    steps = [
-        c for c in seen if c.startswith(("holdfast restore", "cd /root/myapp", "sleep"))
-    ]
-    assert "--component project-myapp" in steps[0] and "--no-stop" in steps[0]
-    assert steps[1] == "cd /root/myapp && docker compose -p myapp up -d"
+    steps = [c for c in seen if c.startswith(("holdfast restore", "cd /root/myapp"))]
+    # the snapshot is checked first, before the question and before any write
+    assert "restore verify" in steps[0]
+    assert "--component project-myapp" in steps[1] and "--no-stop" in steps[1]
+    assert steps[2] == "cd /root/myapp && docker compose up -d"  # no -p
     assert steps[-1].endswith("--yes") and "--component" not in steps[-1]
+    # the folder asked about is the project's own, not the recipe's "/"
     assert any("/root/myapp" in text for _, text in ctx.confirmed)
 
 

@@ -243,12 +243,15 @@ class ContentsTab(OperationTab):
         question = ce.diff(self.original, new_text) + "\n\nСохранить на сервере?"
         if not self.ctx.confirm("Сохранить holdfast.toml", question):
             return
+        expected = self.original  # the file as it was when this edit started
 
         def run(on_text, on_stage):
             with self.ctx.open_connection(server) as conn:
                 on_stage("Сохраняю…")
-                result = ce.save_config(conn, new_text, on_text=on_text)
-                if result.rolled_back:
+                result = ce.save_config(
+                    conn, new_text, expected=expected, on_text=on_text
+                )
+                if not result.ok:
                     on_text(result.dry_run + "\n")
                     return Outcome(False, "rollback", result.message)
                 return Outcome(

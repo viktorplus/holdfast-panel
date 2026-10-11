@@ -7,32 +7,48 @@
 
 Snapshots are read from their own `manifest.json`, which is plain JSON, so the
 panel does not depend on the holdfast version installed on the server.
+
+A snapshot is only ever put in place whole: it is built under a hidden name and
+renamed when it is complete and checked. A half-copied folder that looks like a
+snapshot would be listed, offered for restore, and counted by the server's
+retention as the newest copy.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import secrets
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .ssh import Connection
+from .store import SPEC_PATTERN
 
 DEFAULT_ROOT = "/opt/backups"
-_SNAPSHOT_NAME = re.compile(r"^\d{8}-\d{6}$")
-_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_SPEC = re.compile(r"^[A-Za-z0-9_.-]+:[^\s'\"`$\\;|&<>]*$")
+_SNAPSHOT_NAME = re.compile(r"\d{8}-\d{6}")
+_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SPEC = re.compile(SPEC_PATTERN)
 MANIFEST_FORMAT = 1
+RCLONE_PROGRESS = ("-v", "--stats", "15s", "--stats-one-line")
+"""Plain lines, not `--progress`: that redraws with control codes even without a
+terminal and would fill the log with them."""
 
 
 @dataclass(frozen=True)
 class Component:
+    """One artifact of a snapshot, with the component it belongs to."""
+
     name: str
     kind: str
+    """What restores it: path, docker_volume, mysql_database, ..."""
     size: int
     target: str = ""
+    """For a project component: the folder it was taken from (where compose
+    runs). Empty for everything else. Not the recipe's `target`, which holdfast
+    always writes as "/" for a folder."""
 
 
 @dataclass(frozen=True)
@@ -53,8 +69,12 @@ class SnapshotInfo:
 
     @property
     def project_dirs(self) -> list[str]:
-        """Folders of compose projects: where `docker compose up` is run."""
-        return [c.target for c in self.components if c.name.startswith("project-")]
+        """Folders of compose projects, in order, each once."""
+        found: list[str] = []
+        for c in self.components:
+            if c.name.startswith("project-") and c.target and c.target not in found:
+                found.append(c.target)
+        return found
 
 
 class BackupError(Exception):
@@ -62,19 +82,19 @@ class BackupError(Exception):
 
 
 def valid_snapshot_name(name: str) -> str:
-    if not _SNAPSHOT_NAME.match(name):
+    if not _SNAPSHOT_NAME.fullmatch(name):
         raise BackupError(f"{name!r} is not a snapshot name (YYYYMMDD-HHMMSS)")
     return name
 
 
 def valid_label(label: str) -> str:
-    if not _LABEL.match(label):
+    if not _LABEL.fullmatch(label):
         raise BackupError(f"{label!r} is not a usable machine name")
     return label
 
 
 def valid_spec(spec: str) -> str:
-    if not _SPEC.match(spec):
+    if not _SPEC.fullmatch(spec):
         raise BackupError(f"{spec!r} is not an rclone path like remote:folder")
     return spec.rstrip("/")
 
@@ -87,12 +107,19 @@ def parse_manifest(text: str, location: str) -> SnapshotInfo:
                 f"{location}: snapshot format {manifest.get('format')!r}, "
                 f"this panel reads {MANIFEST_FORMAT}"
             )
+        # The folder a project came from is in `components`; the artifact's own
+        # recipe only says "restore under /".
+        folders = {
+            str(c.get("name")): str(c.get("path", ""))
+            for c in manifest.get("components") or []
+            if c.get("type") == "path"
+        }
         components = tuple(
             Component(
                 name=str(a.get("component", "")),
                 kind=str((a.get("restore") or {}).get("type", "")),
                 size=int(a.get("size", 0)),
-                target=str((a.get("restore") or {}).get("target", "")),
+                target=folders.get(str(a.get("component", "")), ""),
             )
             for a in manifest["artifacts"]
         )
@@ -130,7 +157,7 @@ class Listing:
 def _read_sections(text: str, base: str) -> Listing:
     listing = Listing()
     for name, body in _split_sections(text):
-        if not _SNAPSHOT_NAME.match(name):
+        if not _SNAPSHOT_NAME.fullmatch(name):
             continue
         try:
             listing.snapshots.append(parse_manifest(body, f"{base}/{name}"))
@@ -144,14 +171,18 @@ def _read_sections(text: str, base: str) -> Listing:
 
 
 def list_server(conn: Connection, root: str = DEFAULT_ROOT) -> Listing:
-    quoted = shlex.quote(root.rstrip("/"))
+    """Snapshots in `root`. A missing folder is an error, not an empty list."""
+    base = root.rstrip("/")
+    quoted = shlex.quote(base)
+    if not conn.run(f"test -d {quoted}").ok:
+        raise BackupError(f"на сервере нет папки со снимками: {base}")
     result = conn.run(
         f'for d in {quoted}/*/; do n=$(basename "$d"); '
         'if [ -f "$d/manifest.json" ]; then echo "##$n"; cat "$d/manifest.json"; echo; fi; '
         "done",
         timeout=120,
     )
-    return _read_sections(result.out, root.rstrip("/"))
+    return _read_sections(result.out, base)
 
 
 def list_pc(folder: Path, host_label: str | None = None) -> Listing:
@@ -164,7 +195,7 @@ def list_pc(folder: Path, host_label: str | None = None) -> Listing:
             continue
         for snap in sorted(label_dir.iterdir(), reverse=True):
             manifest = snap / "manifest.json"
-            if not (snap.is_dir() and manifest.is_file()):
+            if snap.name.startswith(".") or not (snap.is_dir() and manifest.is_file()):
                 continue
             try:
                 listing.snapshots.append(
@@ -176,12 +207,32 @@ def list_pc(folder: Path, host_label: str | None = None) -> Listing:
 
 
 def list_remote(conn: Connection, spec: str, host_label: str) -> Listing:
-    """Snapshots of one machine on an rclone remote, asked through `conn`."""
+    """Snapshots of one machine on an rclone remote, asked through `conn`.
+
+    "rclone is not installed" and "the remote refused" are errors; only an
+    answer that lists nothing is an empty list.
+    """
     base = f"{valid_spec(spec)}/{valid_label(host_label)}"
     quoted = shlex.quote(base)
+    if not conn.run("command -v rclone >/dev/null").ok:
+        raise BackupError("на сервере не установлен rclone")
+    names = conn.run(f"rclone lsf --dirs-only {quoted}/", timeout=300)
+    if not names.ok:
+        raise BackupError(
+            f"rclone не смог прочитать {base}: "
+            f"{names.err.strip() or names.out.strip() or 'ошибка'}"
+        )
+    wanted = [
+        n.strip("/ ")
+        for n in names.out.split()
+        if _SNAPSHOT_NAME.fullmatch(n.strip("/ "))
+    ]
+    if not wanted:
+        return Listing()
     result = conn.run(
-        f"for n in $(rclone lsf --dirs-only {quoted}/ 2>/dev/null | tr -d /); do "
-        f'echo "##$n"; rclone cat {quoted}/$n/manifest.json 2>/dev/null; echo; done',
+        "for n in "
+        + " ".join(shlex.quote(n) for n in wanted)
+        + f'; do echo "##$n"; rclone cat {quoted}/"$n"/manifest.json 2>/dev/null; echo; done',
         timeout=300,
     )
     return _read_sections(result.out, base)
@@ -212,10 +263,14 @@ def pull_to_pc(
     host_label: str,
     on_bytes: Callable[[int], None] = lambda n: None,
 ) -> Path:
-    """Copy a server's snapshot to `<pc_folder>/<host_label>/<snapshot>`."""
-    valid_snapshot_name(snapshot_dir.rstrip("/").rpartition("/")[2])
+    """Copy a server's snapshot to `<pc_folder>/<host_label>/<snapshot>`.
+
+    The connection layer extracts beside the final place and renames when the
+    stream ended cleanly, so what is at the destination is whole or absent.
+    """
+    name = valid_snapshot_name(snapshot_dir.rstrip("/").rpartition("/")[2])
     target = pc_folder / valid_label(host_label)
-    if (target / snapshot_dir.rstrip("/").rpartition("/")[2]).exists():
+    if (target / name).exists():
         raise BackupError("this snapshot is already on this computer")
     return conn.download_dir(snapshot_dir, target, on_bytes)
 
@@ -226,13 +281,29 @@ def push_from_pc(
     server_root: str = DEFAULT_ROOT,
     on_bytes: Callable[[int], None] = lambda n: None,
 ) -> str:
-    valid_snapshot_name(local_snapshot.name)
-    existing = conn.run(
-        f"test -e {shlex.quote(f'{server_root}/{local_snapshot.name}')}"
-    )
-    if existing.ok:
+    """Put a snapshot from this computer on the server, whole or not at all.
+
+    It is sent into a hidden staging folder and moved into place only if the
+    final name is still free, so a dropped connection leaves nothing that the
+    server's retention could mistake for the newest snapshot.
+    """
+    name = valid_snapshot_name(local_snapshot.name)
+    root = server_root.rstrip("/")
+    final = f"{root}/{name}"
+    if conn.run(f"test -e {shlex.quote(final)}").ok:
         raise BackupError("this snapshot is already on the server")
-    return conn.upload_dir(local_snapshot, server_root, on_bytes)
+    staging = f"{root}/.incoming-{secrets.token_hex(4)}"
+    try:
+        conn.upload_dir(local_snapshot, staging, on_bytes)
+        moved = conn.run(
+            f"test ! -e {shlex.quote(final)} && "
+            f"mv {shlex.quote(f'{staging}/{name}')} {shlex.quote(final)}"
+        )
+        if not moved.ok:
+            raise BackupError("this snapshot is already on the server")
+    finally:
+        conn.run(f"rm -rf {shlex.quote(staging)}")
+    return final
 
 
 def push_to_remote(
@@ -246,8 +317,8 @@ def push_to_remote(
     name = valid_snapshot_name(snapshot_dir.rstrip("/").rpartition("/")[2])
     target = f"{valid_spec(spec)}/{valid_label(host_label)}/{name}"
     return conn.run_stream(
-        f"rclone copy {shlex.quote(snapshot_dir)} {shlex.quote(target)} --progress "
-        "--stats-one-line",
+        f"rclone copy {shlex.quote(snapshot_dir)} {shlex.quote(target)} "
+        + " ".join(RCLONE_PROGRESS),
         on_text,
         timeout=24 * 3600,
     )
@@ -261,20 +332,40 @@ def pull_from_remote(
     server_root: str,
     on_text: Callable[[str], None],
 ) -> int:
-    """Bring a snapshot from a remote onto the server, then check its checksums."""
+    """Bring a snapshot from a remote onto the server, checked, whole or not at all.
+
+    It is copied into a hidden folder, its SHA256SUMS are verified there, and
+    only then is it renamed. A snapshot that already exists is never merged
+    into; a copy that fails the check is removed.
+    """
     valid_snapshot_name(name)
     source = f"{valid_spec(spec)}/{valid_label(host_label)}/{name}"
-    target = f"{server_root.rstrip('/')}/{name}"
+    root = server_root.rstrip("/")
+    final = f"{root}/{name}"
+    part = f"{root}/.{name}.part"
+    q = shlex.quote
     code = conn.run_stream(
-        f"mkdir -p {shlex.quote(target)} && "
-        f"rclone copy {shlex.quote(source)} {shlex.quote(target)} --progress "
-        "--stats-one-line",
+        f"if [ -e {q(final)} ]; then echo 'этот снимок уже есть на сервере'; exit 17; fi; "
+        f"rm -rf {q(part)} && mkdir -p {q(part)}",
         on_text,
-        timeout=24 * 3600,
+        timeout=120,
     )
     if code != 0:
         return code
-    # A copy that arrived is not a copy that is whole: SHA256SUMS says which.
-    return conn.run_stream(
-        f"cd {shlex.quote(target)} && sha256sum -c SHA256SUMS", on_text, timeout=3600
+    code = conn.run_stream(
+        f"rclone copy {q(source)} {q(part)} " + " ".join(RCLONE_PROGRESS),
+        on_text,
+        timeout=24 * 3600,
     )
+    if code == 0:
+        # A copy that arrived is not a copy that is whole: SHA256SUMS says which.
+        code = conn.run_stream(
+            f"cd {q(part)} && sha256sum -c SHA256SUMS", on_text, timeout=3600
+        )
+    if code == 0:
+        code = conn.run_stream(
+            f"test ! -e {q(final)} && mv {q(part)} {q(final)}", on_text, timeout=120
+        )
+    if code != 0:
+        conn.run(f"rm -rf {q(part)}")
+    return code

@@ -1,9 +1,14 @@
-"""Restoring through `holdfast restore`, with the key present only for the run.
+"""Restoring through `holdfast restore`, with the key present only while it is used.
 
-The private key lives on this computer. For a restore it is written to a
-closed file on the server, used, and removed in a `finally`: whatever happens
-in between, the server is not left holding it. A restore overwrites live data,
-so nothing is written before `confirm` has seen the plan and said yes.
+The private key lives on this computer. It is written to a closed file on the
+server for one step at a time and removed in a `finally`, whatever happens: a
+failed step, a dropped connection, even a failure while removing it (that is
+reported with the file's name, so it can be removed by hand). It is *not* on the
+server while a person reads the plan, which may take an hour: the key goes up
+for the check and the plan, comes down, and goes up again only after "yes".
+
+A restore overwrites live data, so nothing is written before `confirm` has seen
+the plan and said yes.
 """
 
 from __future__ import annotations
@@ -16,11 +21,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backups import BackupError, SnapshotInfo
+from .backups import BackupError, Component, SnapshotInfo
 from .ssh import Connection
 
-_COMPONENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_COMPONENT = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
 @dataclass
@@ -29,6 +33,14 @@ class Outcome:
     stage: str
     message: str = ""
     key_removed: bool = True
+
+
+@dataclass
+class KeyOnServer:
+    """Where the key is while a step runs, and whether it was removed afterwards."""
+
+    path: str
+    removed: bool = False
 
 
 def _read_key(path: Path) -> bytes:
@@ -41,24 +53,40 @@ def _read_key(path: Path) -> bytes:
     return data
 
 
+def _remove_key(conn: Connection, remote: str) -> bool:
+    """Shred the key file; one retry; never raises (it runs inside `finally`)."""
+    quoted = shlex.quote(remote)
+    for _ in range(2):
+        try:
+            conn.run(f"shred -u {quoted} 2>/dev/null || rm -f {quoted}")
+            if conn.run(f"test ! -e {quoted}").ok:
+                return True
+        except Exception:  # noqa: BLE001, S110 - the original problem matters more
+            pass
+    return False
+
+
 @contextmanager
-def server_key(conn: Connection, key_file: Path) -> Iterator[tuple[str, list[bool]]]:
+def server_key(conn: Connection, key_file: Path) -> Iterator[KeyOnServer]:
     """The key on the server for the length of a `with` block.
 
-    Yields (remote path, flag list). On exit the file is shredded; the flag
-    list gets True appended if that worked, so callers can report a leftover.
+    The file is created before anything can go wrong with it, the removal is in
+    a `finally` that cannot raise over the real error, and the yielded object
+    says afterwards whether it is gone.
     """
-    remote = f"/root/.holdfast-restore-key-{secrets.token_hex(8)}"
-    removed: list[bool] = []
-    conn.put_bytes(remote, _read_key(key_file))
+    data = _read_key(key_file)
+    state = KeyOnServer(f"/root/.holdfast-restore-key-{secrets.token_hex(8)}")
     try:
-        yield remote, removed
+        conn.put_bytes(state.path, data)  # inside: a half-written key is removed too
+        yield state
     finally:
-        cleanup = conn.run(
-            f"shred -u {shlex.quote(remote)} 2>/dev/null || rm -f {shlex.quote(remote)}"
-        )
-        gone = conn.run(f"test ! -e {shlex.quote(remote)}")
-        removed.append(cleanup.ok and gone.ok)
+        state.removed = _remove_key(conn, state.path)
+
+
+def _leftover(state: KeyOnServer | None) -> str:
+    if state is None or state.removed:
+        return ""
+    return f" The key file could not be removed from the server: {state.path}"
 
 
 def verify_snapshot(
@@ -68,10 +96,10 @@ def verify_snapshot(
     on_text: Callable[[str], None] = lambda text: None,
 ) -> bool:
     """Read every artifact of a snapshot back through the key. Changes nothing."""
-    with server_key(conn, key_file) as (key, _removed):
+    with server_key(conn, key_file) as key:
         code = conn.run_stream(
             f"holdfast restore verify --snapshot {shlex.quote(snapshot_dir)} "
-            f"--identity {shlex.quote(key)}",
+            f"--identity {shlex.quote(key.path)}",
             on_text,
             timeout=3600,
         )
@@ -91,7 +119,7 @@ def _restore_command(
         f"--identity {shlex.quote(key)}",
     ]
     if component is not None:
-        if not _COMPONENT.match(component):
+        if not _COMPONENT.fullmatch(component):
             raise BackupError(f"{component!r} is not a component name")
         parts.append(f"--component {component}")
     return " ".join([*parts, *extra])
@@ -110,63 +138,95 @@ def restore_snapshot(
     on_stage: Callable[[str], None] = lambda stage: None,
 ) -> Outcome:
     """verify -> plan -> confirm -> restore, on the server the snapshot is on."""
-    flags = []
+    flags: list[str] = []
     if from_other_host:
         flags.append("--from-other-host")
     if not stop_containers:
         flags.append("--no-stop")
 
-    with server_key(conn, key_file) as (key, removed):
-        outcome = _verify_plan_restore(
-            conn, snapshot_dir, key, component, tuple(flags), confirm, on_text, on_stage
+    # Phase 1, key up: is the snapshot readable, and what would be done.
+    with server_key(conn, key_file) as plan_key:
+        on_stage("Проверка снимка")
+        verify = conn.run_stream(
+            f"holdfast restore verify --snapshot {shlex.quote(snapshot_dir)} "
+            f"--identity {shlex.quote(plan_key.path)}",
+            on_text,
+            timeout=3600,
         )
-    outcome.key_removed = removed[0] if removed else False
-    if not outcome.key_removed:
-        outcome.message += " The key file could not be removed from the server."
+        chunks: list[str] = []
+        plan_code = -1
+        if verify == 0:
+            on_stage("План восстановления")
+            plan_code = conn.run_stream(
+                _restore_command(
+                    snapshot_dir,
+                    plan_key.path,
+                    component=component,
+                    extra=(*flags, "--dry-run"),
+                ),
+                chunks.append,
+                timeout=600,
+            )
+    # Phase 1 is over and the key is off the server again.
+    if verify != 0:
+        return _done(
+            Outcome(
+                False, "verify", "the snapshot does not read back; nothing was changed"
+            ),
+            plan_key,
+        )
+    plan = "".join(chunks)
+    if plan_code != 0:
+        on_text(plan)
+        return _done(
+            Outcome(False, "plan", "the plan could not be made; nothing was changed"),
+            plan_key,
+        )
+    if not confirm(plan):  # nothing is on the server while the person decides
+        return _done(
+            Outcome(False, "confirm", "cancelled; nothing was changed"), plan_key
+        )
+
+    # Phase 2, key up again, only for the restore.
+    with server_key(conn, key_file) as run_key:
+        on_stage("Восстановление")
+        code = conn.run_stream(
+            _restore_command(
+                snapshot_dir,
+                run_key.path,
+                component=component,
+                extra=(*flags, "--yes"),
+            ),
+            on_text,
+            timeout=24 * 3600,
+        )
+    if code != 0:
+        return _done(
+            Outcome(
+                False,
+                "restore",
+                "the restore stopped half way; the machine may be PARTIALLY "
+                "RESTORED. Fix the cause and run it again: the steps can be repeated.",
+            ),
+            run_key,
+        )
+    return _done(Outcome(True, "done", "restored"), run_key)
+
+
+def _done(outcome: Outcome, key: KeyOnServer | None) -> Outcome:
+    outcome.key_removed = key is None or key.removed
+    outcome.message += _leftover(key)
     return outcome
 
 
-def _verify_plan_restore(
-    conn, snapshot_dir, key, component, flags, confirm, on_text, on_stage
-) -> Outcome:
-    on_stage("Проверка снимка")
-    verify = conn.run_stream(
-        f"holdfast restore verify --snapshot {shlex.quote(snapshot_dir)} "
-        f"--identity {shlex.quote(key)}",
-        on_text,
-        timeout=3600,
-    )
-    if verify != 0:
-        return Outcome(
-            False, "verify", "the snapshot does not read back; nothing was changed"
-        )
-
-    on_stage("План восстановления")
-    chunks: list[str] = []
-    plan_cmd = _restore_command(
-        snapshot_dir, key, component=component, extra=(*flags, "--dry-run")
-    )
-    code = conn.run_stream(plan_cmd, chunks.append, timeout=600)
-    plan = "".join(chunks)
-    if code != 0:
-        on_text(plan)
-        return Outcome(False, "plan", "the plan could not be made; nothing was changed")
-    if not confirm(plan):
-        return Outcome(False, "confirm", "cancelled; nothing was changed")
-
-    on_stage("Восстановление")
-    real = _restore_command(
-        snapshot_dir, key, component=component, extra=(*flags, "--yes")
-    )
-    code = conn.run_stream(real, on_text, timeout=24 * 3600)
-    if code != 0:
-        return Outcome(
-            False,
-            "restore",
-            "the restore stopped half way; the machine may be PARTIALLY RESTORED. "
-            "Fix the cause and run it again: the steps can be repeated.",
-        )
-    return Outcome(True, "done", "restored")
+def _project_components(info: SnapshotInfo) -> list[Component]:
+    seen: set[str] = set()
+    projects = []
+    for c in info.components:
+        if c.name.startswith("project-") and c.name not in seen:
+            seen.add(c.name)
+            projects.append(c)
+    return projects
 
 
 def recover_new_server(
@@ -186,7 +246,7 @@ def recover_new_server(
     anonymous volume can only be loaded into containers that already exist, and
     the containers need the project folder (compose file, .env) first.
     """
-    projects = [c for c in info.components if c.name.startswith("project-")]
+    projects = _project_components(info)
     if not projects:
         return Outcome(
             False,
@@ -194,9 +254,18 @@ def recover_new_server(
             "this snapshot holds no project folder (a component named project-…), "
             "so there is nothing to start containers from",
         )
+    unknown = [p.name for p in projects if not p.target]
+    if unknown:
+        return Outcome(
+            False,
+            "plan",
+            f"the snapshot does not say which folder {', '.join(unknown)} came "
+            "from, so it cannot be started on its own; restore it with the "
+            "ordinary restore and start the containers by hand",
+        )
     steps = [
         f"1. вернуть папки проектов: {', '.join(c.target for c in projects)}",
-        "2. запустить их: docker compose up -d",
+        "2. запустить их: docker compose up -d (в каждой папке)",
         "3. восстановить базы и тома из снимка",
     ]
     summary = (
@@ -204,18 +273,34 @@ def recover_new_server(
         + "\n".join(steps)
         + "\nДанные на этом сервере будут перезаписаны."
     )
-    if not confirm(summary):
-        return Outcome(False, "confirm", "cancelled; nothing was changed")
-
     flags = ("--from-other-host",) if from_other_host else ()
-    with server_key(conn, key_file) as (key, removed):
-        outcome = _recover_steps(
-            conn, snapshot_dir, key, projects, flags, on_text, on_stage
+
+    # The snapshot is checked first, while nothing has been changed.
+    with server_key(conn, key_file) as check_key:
+        on_stage("Проверка снимка")
+        verify = conn.run_stream(
+            f"holdfast restore verify --snapshot {shlex.quote(snapshot_dir)} "
+            f"--identity {shlex.quote(check_key.path)}",
+            on_text,
+            timeout=3600,
         )
-    outcome.key_removed = removed[0] if removed else False
-    if not outcome.key_removed:
-        outcome.message += " The key file could not be removed from the server."
-    return outcome
+    if verify != 0:
+        return _done(
+            Outcome(
+                False, "verify", "the snapshot does not read back; nothing was changed"
+            ),
+            check_key,
+        )
+    if not confirm(summary):
+        return _done(
+            Outcome(False, "confirm", "cancelled; nothing was changed"), check_key
+        )
+
+    with server_key(conn, key_file) as run_key:
+        outcome = _recover_steps(
+            conn, snapshot_dir, run_key.path, projects, flags, on_text, on_stage
+        )
+    return _done(outcome, run_key)
 
 
 def _recover_steps(
@@ -233,29 +318,31 @@ def _recover_steps(
             return Outcome(False, "project", f"could not restore {project.target}")
 
     for project in projects:
-        name = project.target.rstrip("/").rpartition("/")[2]
-        if not _PROJECT_NAME.match(name):
-            return Outcome(
-                False, "compose", f"{project.target}: not a usable project name"
+        on_stage(f"Запуск {project.target}")
+        folder = shlex.quote(project.target)
+        # No `-p`: compose names the project from the folder, as it did when the
+        # volumes the snapshot refers to were created. Forcing another name would
+        # make new, empty volumes next to the ones holdfast restores into.
+        if (
+            conn.run_stream(
+                f"cd {folder} && docker compose up -d", on_text, timeout=1800
             )
-        on_stage(f"Запуск {name}")
-        up = (
-            f"cd {shlex.quote(project.target)} && "
-            f"docker compose -p {shlex.quote(name)} up -d"
-        )
-        if conn.run_stream(up, on_text, timeout=1800) != 0:
+            != 0
+        ):
             return Outcome(
                 False, "compose", f"docker compose failed in {project.target}"
             )
-        # Databases need a moment before a dump can be loaded into them.
+        # Databases need a moment before a dump can be loaded; holdfast itself
+        # waits for the containers it restores into, so only "something is up"
+        # is checked here.
         wait = (
-            f"cd {shlex.quote(project.target)} && for i in $(seq 1 30); do "
-            f'[ -n "$(docker compose -p {shlex.quote(name)} ps --status running -q)" ] '
-            "&& exit 0; sleep 2; done; exit 1"
+            f"cd {folder} && for i in $(seq 1 30); do "
+            '[ -n "$(docker compose ps --status running -q)" ] && exit 0; sleep 2; done; exit 1'
         )
         if conn.run_stream(wait, on_text, timeout=120) != 0:
-            return Outcome(False, "compose", f"the containers of {name} did not start")
-        conn.run_stream("sleep 15", on_text, timeout=60)
+            return Outcome(
+                False, "compose", f"the containers in {project.target} did not start"
+            )
 
     on_stage("Базы и тома")
     full = _restore_command(snapshot_dir, key, extra=(*flags, "--yes"))

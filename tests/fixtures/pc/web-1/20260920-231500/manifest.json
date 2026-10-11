@@ -1,1 +1,72 @@
-{"format": 1, "tool": "holdfast", "tool_version": "0.1.0", "snapshot": "20260920-231500", "created_at": "2026-09-20T23:15:00+00:00", "host_label": "web-1", "compression": {"tool": "zstd", "level": 10}, "encryption": {"enabled": false, "tool": "none", "suffix": "", "recipients": []}, "components": [], "artifacts": [{"path": "project-myapp.tar.zst.age", "component": "project-myapp", "size": 6, "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04", "restore": {"type": "path", "target": "/root/myapp"}, "check": "cat >/dev/null"}, {"path": "mysql/db-wordpress.sql.zst.age", "component": "myapp-db-1", "size": 6, "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04", "restore": {"type": "mysql_database", "container": "myapp-db-1"}, "check": "cat >/dev/null"}, {"path": "docker-volumes/wp.tar.zst.age", "component": "volume-wp", "size": 6, "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04", "restore": {"type": "docker_volume", "container": "myapp-wp-1", "destination": "/var/www/html"}, "check": "cat >/dev/null"}]}
+{
+  "format": 1,
+  "tool": "holdfast",
+  "tool_version": "0.1.0",
+  "snapshot": "20260920-231500",
+  "created_at": "2026-09-20T23:15:00+00:00",
+  "host_label": "web-1",
+  "compression": {
+    "tool": "zstd",
+    "level": 10
+  },
+  "encryption": {
+    "enabled": false,
+    "tool": "none",
+    "suffix": "",
+    "recipients": []
+  },
+  "components": [
+    {
+      "type": "path",
+      "name": "project-myapp",
+      "path": "/root/myapp",
+      "exclude": [
+        "root/myapp/db_data"
+      ]
+    },
+    {
+      "type": "mysql",
+      "name": "myapp-db-1"
+    },
+    {
+      "type": "docker_volume",
+      "name": "volume-wp"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "project-myapp.tar.zst.age",
+      "component": "project-myapp",
+      "size": 6,
+      "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04",
+      "restore": {
+        "type": "path",
+        "target": "/"
+      },
+      "check": "cat >/dev/null"
+    },
+    {
+      "path": "mysql/db-wordpress.sql.zst.age",
+      "component": "myapp-db-1",
+      "size": 6,
+      "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04",
+      "restore": {
+        "type": "mysql_database",
+        "container": "myapp-db-1"
+      },
+      "check": "cat >/dev/null"
+    },
+    {
+      "path": "docker-volumes/wp.tar.zst.age",
+      "component": "volume-wp",
+      "size": 6,
+      "sha256": "771824de42287642fa0fbe0b568b80cc3290e29b7d3cd6efbc7b1b8eb1037b04",
+      "restore": {
+        "type": "docker_volume",
+        "container": "myapp-wp-1",
+        "destination": "/var/www/html"
+      },
+      "check": "cat >/dev/null"
+    }
+  ]
+}
