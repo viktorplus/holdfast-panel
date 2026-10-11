@@ -24,6 +24,7 @@ from ..store import Server, StoreError
 from .add_dialog import AddServerDialog
 from .backups_tab import BackupsTab
 from .base import ServerTab
+from .contents_tab import ContentsTab
 from .diagnostics_tab import DiagnosticsTab
 from .log_tab import LogTab
 from .monitor_tab import MonitorTab
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self.tab_list: list[ServerTab] = []
         self.add_tab(MonitorTab(ctx), "Монитор")
         self.add_tab(BackupsTab(ctx), "Бэкапы")
+        self.add_tab(ContentsTab(ctx), "Состав архива")
         self.add_tab(DiagnosticsTab(ctx), "Диагностика")
         self.add_tab(LogTab(ctx), "Журнал")
         self.tabs.currentChanged.connect(self._refresh_current)
