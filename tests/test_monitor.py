@@ -29,6 +29,7 @@ def test_real_output_from_a_debian_machine_is_understood():
     assert stats.uptime_seconds > 400000
     assert [p.command for p in stats.processes][:2] == ["systemd", "bash"]
     assert stats.processes[0].pid == 1 and stats.processes[0].cpu == 6.6
+    assert not any(d.mount.endswith("cli-tools") for d in stats.disks)  # loop image
     root = next(d for d in stats.disks if d.mount == "/")
     assert round(root.percent) == 1
     # "docker: not found" hint text must not become a container

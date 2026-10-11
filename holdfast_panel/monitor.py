@@ -141,6 +141,8 @@ def parse_stats(text: str) -> Stats:
         if len(parts) < 6 or not parts[1].isdigit():
             continue
         mount = " ".join(parts[5:])
+        if parts[0].startswith("/dev/loop"):
+            continue  # snap and other read-only images are full by design
         if parts[0] in seen:  # the same device mounted twice (bind mounts)
             continue
         seen.add(parts[0])

@@ -1,45 +1,42 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QMainWindow,
     QMessageBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolBar,
 )
 
+from ..alerts import evaluate, worst
+from ..context import AppContext
+from ..diagnostics import FAIL, OK, WARN
 from ..enroll import enroll
-from ..keys import KeyPair
-from ..ssh import connect, fetch_host_fingerprint
-from ..store import Server, ServerStore, StoreError
+from ..monitor import collect
+from ..ssh import fetch_host_fingerprint
+from ..store import Server, StoreError
 from .add_dialog import AddServerDialog
+from .base import ServerTab
+from .monitor_tab import MonitorTab
 from .workers import Task
 
-COLUMNS = ["Имя", "Адрес", "Пользователь", "Состояние", "holdfast"]
-VERSION_COMMAND = "command -v holdfast >/dev/null && holdfast version"
-
-
-def probe(server: Server, key: KeyPair) -> str:
-    """The version of holdfast on the server, or '' if it is not installed."""
-    with connect(server, key=key) as session:
-        result = session.run(VERSION_COMMAND)
-        return result.out.strip() if result.ok else ""
+COLUMNS = ["Имя", "Адрес", "Состояние"]
+MARK = {OK: "●", WARN: "▲", FAIL: "✖"}
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store: ServerStore, get_key: Callable[[], KeyPair]):
+    def __init__(self, ctx: AppContext):
         super().__init__()
-        self.store = store
-        self.get_key = get_key
-        self.pool = QThreadPool.globalInstance()
+        self.ctx = ctx
+        ctx.parent_window = self
         self.setWindowTitle("Holdfast Panel")
-        self.resize(900, 460)
+        self.resize(1200, 720)
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
@@ -50,7 +47,19 @@ class MainWindow(QMainWindow):
             QHeaderView.ResizeMode.Stretch
         )
         self.table.verticalHeader().hide()
-        self.setCentralWidget(self.table)
+        self.table.itemSelectionChanged.connect(self._sync_tabs)
+
+        self.tabs = QTabWidget()
+        self.tab_list: list[ServerTab] = []
+        self.add_tab(MonitorTab(ctx), "Монитор")
+        self.tabs.currentChanged.connect(lambda _: self._refresh_current())
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.table)
+        splitter.addWidget(self.tabs)
+        splitter.setStretchFactor(1, 4)
+        splitter.setSizes([320, 880])
+        self.setCentralWidget(splitter)
 
         bar = QToolBar()
         bar.setMovable(False)
@@ -58,7 +67,7 @@ class MainWindow(QMainWindow):
         for text, slot in (
             ("Добавить сервер", self.add_server),
             ("Удалить", self.remove_server),
-            ("Обновить состояние", self.refresh),
+            ("Обновить состояние", self.refresh_all),
         ):
             action = QAction(text, self)
             action.triggered.connect(slot)
@@ -66,37 +75,48 @@ class MainWindow(QMainWindow):
 
         self.servers: list[Server] = []
         self.reload()
-        self.refresh()
+        self.refresh_all()
+
+    def add_tab(self, tab: ServerTab, title: str) -> None:
+        self.tab_list.append(tab)
+        self.tabs.addTab(tab, title)
 
     # ---- the list ---------------------------------------------------------
 
-    def reload(self) -> None:
+    def reload(self, keep: str | None = None) -> None:
         try:
-            self.servers = self.store.load()
+            self.servers = self.ctx.servers.load()
         except StoreError as exc:
-            QMessageBox.critical(self, "Список серверов", str(exc))
+            self.ctx.show_error(str(exc))
             self.servers = []
         self.table.setRowCount(len(self.servers))
         for row, server in enumerate(self.servers):
-            cells = [
-                server.name,
-                f"{server.host}:{server.port}",
-                server.user,
-                "ключ установлен" if server.enrolled else "ключ не установлен",
-                "",
-            ]
-            for column, text in enumerate(cells):
+            state = "в сети?" if server.enrolled else "ключ не установлен"
+            for column, text in enumerate(
+                [server.name, f"{server.host}:{server.port}", state]
+            ):
                 self.table.setItem(row, column, QTableWidgetItem(text))
+            if keep == server.id:
+                self.table.selectRow(row)
 
     def selected(self) -> Server | None:
         row = self.table.currentRow()
         return self.servers[row] if 0 <= row < len(self.servers) else None
 
-    def set_status(self, server: Server, state: str, version: str = "") -> None:
+    def set_state(self, server: Server, text: str) -> None:
         for row, current in enumerate(self.servers):
             if current.id == server.id:
-                self.table.item(row, 3).setText(state)
-                self.table.item(row, 4).setText(version)
+                self.table.item(row, 2).setText(text)
+
+    def _sync_tabs(self) -> None:
+        server = self.selected()
+        for tab in self.tab_list:
+            tab.server = server
+        self._refresh_current()
+
+    def _refresh_current(self) -> None:
+        tab = self.tab_list[self.tabs.currentIndex()]
+        tab.refresh()
 
     # ---- add --------------------------------------------------------------
 
@@ -110,7 +130,13 @@ class MainWindow(QMainWindow):
         task = Task(lambda: fetch_host_fingerprint(host, port))
         task.signals.done.connect(lambda fp: self._confirm_host(server, fp, password))
         task.signals.failed.connect(self._failed)
-        self.pool.start(task)
+        self._keep(task)
+
+    def _keep(self, task: Task) -> None:
+        self.ctx.pool.start(task)
+        self._running = [*getattr(self, "_running", []), task]
+        task.signals.done.connect(lambda _: self._running.remove(task))
+        task.signals.failed.connect(lambda _: self._running.remove(task))
 
     def _confirm_host(self, server: Server, fingerprint: str, password: str) -> None:
         self.statusBar().clearMessage()
@@ -126,22 +152,23 @@ class MainWindow(QMainWindow):
             return
         server.host_fingerprint = fingerprint
         try:
-            self.store.add(server)
+            self.ctx.servers.add(server)
         except StoreError as exc:
             self._failed(str(exc))
             return
         self.reload()
         self.statusBar().showMessage("Устанавливаю ключ…")
-        task = Task(lambda: enroll(server, password, self.get_key()))
+        task = Task(lambda: enroll(server, password, self.ctx.get_key()))
         task.signals.done.connect(lambda _: self._enrolled(server))
         task.signals.failed.connect(self._failed)
-        self.pool.start(task)
+        self._keep(task)
 
     def _enrolled(self, server: Server) -> None:
         server.enrolled = True
-        self.store.update(server)
+        self.ctx.servers.update(server)
+        self.ctx.log(server, "сервер добавлен, ключ установлен", True)
         self.statusBar().showMessage(f"{server.name}: ключ установлен", 5000)
-        self.reload()
+        self.reload(keep=server.id)
         self.check(server)
 
     # ---- remove and refresh ----------------------------------------------
@@ -150,36 +177,43 @@ class MainWindow(QMainWindow):
         server = self.selected()
         if server is None:
             return
-        answer = QMessageBox.question(
-            self,
+        if self.ctx.confirm(
             "Удалить",
             f"Убрать «{server.name}» из списка? Сам сервер и ключ панели на нём "
             "не меняются.",
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self.store.remove(server.id)
+        ):
+            self.ctx.servers.remove(server.id)
+            self.ctx.log(server, "сервер убран из списка", True)
             self.reload()
 
-    def refresh(self) -> None:
+    def refresh_all(self) -> None:
         for server in self.servers:
             if server.enrolled:
                 self.check(server)
 
     def check(self, server: Server) -> None:
-        self.set_status(server, "проверяю…")
-        task = Task(lambda: probe(server, self.get_key()))
-        task.signals.done.connect(
-            lambda version: self.set_status(
-                server,
-                "в сети",
-                version or "holdfast не установлен",
-            )
-        )
+        """The short state in the list: reachable, and what needs attention."""
+        self.set_state(server, "проверяю…")
+
+        def read():
+            with self.ctx.open_connection(server) as conn:
+                return collect(conn)
+
+        task = Task(read)
+
+        def ok(stats) -> None:
+            alerts = evaluate(stats, None)
+            level = worst(alerts)
+            version = stats.holdfast_version or "holdfast не установлен"
+            note = f" · {alerts[0].text}" if alerts else ""
+            self.set_state(server, f"{MARK[level]} {version}{note}")
+
+        task.signals.done.connect(ok)
         task.signals.failed.connect(
-            lambda message: self.set_status(server, f"нет связи: {message}")
+            lambda message: self.set_state(server, f"{MARK[FAIL]} нет связи: {message}")
         )
-        self.pool.start(task)
+        self._keep(task)
 
     def _failed(self, message: str) -> None:
         self.statusBar().clearMessage()
-        QMessageBox.warning(self, "Не получилось", message)
+        self.ctx.show_error(message)

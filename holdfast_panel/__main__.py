@@ -4,21 +4,14 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from .keys import CredentialManager, ensure_keypair
+from .context import AppContext
 from .paths import data_dir
-from .store import ServerStore
 from .ui.main_window import MainWindow
 
 
 def run() -> None:
     app = QApplication(sys.argv)
-    directory = data_dir()
-    store = ServerStore(directory / "servers.json")
-
-    def get_key():
-        return ensure_keypair(directory, CredentialManager())
-
-    window = MainWindow(store, get_key)
+    window = MainWindow(AppContext.create(data_dir()))
     window.show()
     sys.exit(app.exec())
 
