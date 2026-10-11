@@ -2,7 +2,7 @@ import pytest
 from fake_sshd import PASSWORD, FakeSshd, find_bash
 
 from holdfast_panel.enroll import authorize_command, enroll
-from holdfast_panel.keys import ensure_keypair
+from holdfast_panel.keys import KeyStoreError, ensure_keypair
 from holdfast_panel.ssh import (
     HostKeyMismatch,
     SshError,
@@ -88,7 +88,7 @@ def test_the_key_is_made_once_and_opens_with_its_passphrase(tmp_path):
 
 def test_a_key_without_its_passphrase_is_reported_not_replaced(tmp_path):
     ensure_keypair(tmp_path, MemorySecrets())
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyStoreError):
         ensure_keypair(tmp_path, MemorySecrets())
 
 

@@ -10,12 +10,12 @@ from .store import Server
 
 # The line goes into a shell command, so only the characters of a real
 # ed25519 public key line may reach it.
-_PUBLIC_LINE = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/=]+ [A-Za-z0-9._-]+$")
+_PUBLIC_LINE = re.compile(r"ssh-ed25519 [A-Za-z0-9+/=]+ [A-Za-z0-9._-]+")
 
 
 def authorize_command(public_line: str) -> str:
     """A shell line that adds the key to authorized_keys unless it is there."""
-    if not _PUBLIC_LINE.match(public_line):
+    if not _PUBLIC_LINE.fullmatch(public_line):
         raise ValueError("not a public key line")
     return (
         "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && "

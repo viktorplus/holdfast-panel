@@ -6,6 +6,7 @@ with something that answers at once instead of opening a window or a socket.
 
 from __future__ import annotations
 
+import threading
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -68,7 +69,7 @@ class AppContext:
             servers=ServerStore(data_dir / "servers.json"),
             storages=StorageStore(data_dir / "storages.json"),
             library=Library(data_dir / "templates"),
-            get_key=lambda: ensure_keypair(data_dir, CredentialManager()),
+            get_key=_cached_key(data_dir),
         )
         context.show_error = lambda message: QMessageBox.warning(
             context.parent_window, "Не получилось", message
@@ -103,3 +104,18 @@ def _pick_key_file(parent) -> Path | None:
 def _pick_one(parent, title: str, options: list[str]) -> int | None:
     item, ok = QInputDialog.getItem(parent, title, title, options, 0, False)
     return options.index(item) if ok else None
+
+
+def _cached_key(data_dir: Path) -> Callable[[], KeyPair]:
+    """The key is opened once per run: opening it derives a key from the
+    passphrase, which is slow, and every connection of every tab asks."""
+    lock = threading.Lock()
+    cache: list[KeyPair] = []
+
+    def get() -> KeyPair:
+        with lock:
+            if not cache:
+                cache.append(ensure_keypair(data_dir, CredentialManager()))
+            return cache[0]
+
+    return get

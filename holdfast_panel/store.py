@@ -81,8 +81,13 @@ class _ListStore:
         self.save([*records, record])
 
     def update(self, record) -> None:
+        records = self.load()
+        if not any(r.id == record.id for r in records):
+            raise StoreError(f"no {self.what} with this id; it was removed meanwhile")
+        if any(r.name == record.name and r.id != record.id for r in records):
+            raise StoreError(f"a {self.what} called {record.name!r} already exists")
         self.check(record)
-        self.save([record if r.id == record.id else r for r in self.load()])
+        self.save([record if r.id == record.id else r for r in records])
 
     def remove(self, record_id: str) -> None:
         self.save([r for r in self.load() if r.id != record_id])
