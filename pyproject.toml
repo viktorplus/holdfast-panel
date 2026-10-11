@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holdfast-panel"
+version = "0.1.0"
+description = "Windows control panel for servers running holdfast"
+requires-python = ">=3.11"
+# PySide6: the GUI. paramiko: SSH with a password for the one-time key
+# enrolment, and with a key afterwards. keyring: the Windows Credential
+# Manager holds the passphrase of the panel's own key.
+dependencies = ["PySide6>=6.7", "paramiko>=3.4", "keyring>=25", "cryptography>=42"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.gui-scripts]
+holdfast-panel = "holdfast_panel.__main__:run"
+
+[tool.setuptools.packages.find]
+include = ["holdfast_panel*"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
