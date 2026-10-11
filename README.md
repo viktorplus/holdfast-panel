@@ -8,15 +8,20 @@ Windows-приложение: контрольная панель для сер�
 
 ## Запуск
 
+Нужен Python 3.11.4 или новее.
+
+Одним кликом: скачайте репозиторий (`git clone https://github.com/viktorplus/holdfast-panel.git`
+или ZIP с GitHub) и дважды щёлкните `holdfast-panel.cmd`. Первый запуск создаёт
+`.venv` рядом и ставит туда панель (около минуты), дальше окно открывается сразу,
+без консоли. Для ярлыка на рабочем столе: правый клик по файлу → «Создать ярлык».
+
+Из командной строки, для разработки:
+
 ```sh
-git clone https://github.com/viktorplus/holdfast-panel.git
-cd holdfast-panel
 python -m venv .venv
 .venv\Scripts\pip install -e .[dev]
 .venv\Scripts\python -m holdfast_panel
 ```
-
-Нужен Python 3.11.4 или новее.
 
 ## Что умеет
 
