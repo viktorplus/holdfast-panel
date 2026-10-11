@@ -10,10 +10,13 @@ from __future__ import annotations
 import base64
 import codecs
 import hashlib
+import shlex
 import socket
+import tarfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Self
 
 import paramiko
@@ -78,12 +81,42 @@ class _PinnedHostKey(paramiko.MissingHostKeyPolicy):
             )
 
 
+class _Counting:
+    """A file object that reports how many bytes went through it."""
+
+    def __init__(self, inner, on_bytes: Callable[[int], None]):
+        self._inner = inner
+        self._on_bytes = on_bytes
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._inner.read(size)
+        self._on_bytes(len(data))
+        return data
+
+    def write(self, data: bytes) -> int:
+        written = self._inner.write(data)
+        self._on_bytes(len(data))
+        return written
+
+
+class _ChannelWriter:
+    def __init__(self, channel: paramiko.Channel):
+        self._channel = channel
+
+    def write(self, data: bytes) -> int:
+        self._channel.sendall(data)
+        return len(data)
+
+
 class Connection:
     def __init__(self, client: paramiko.SSHClient):
         self._client = client
 
     def run(self, command: str, timeout: float = 60) -> Result:
-        _, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+        stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+        # Nothing is sent to a command; closing stdin lets `cat` and friends
+        # see the end of input instead of waiting for it forever.
+        stdin.channel.shutdown_write()
         out = stdout.read().decode("utf-8", "replace")
         err = stderr.read().decode("utf-8", "replace")
         return Result(stdout.channel.recv_exit_status(), out, err)
@@ -100,6 +133,7 @@ class Connection:
         channel.set_combine_stderr(True)
         channel.settimeout(1.0)
         channel.exec_command(command)
+        channel.shutdown_write()
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         deadline = time.monotonic() + timeout
         while True:
@@ -119,6 +153,79 @@ class Connection:
         if tail:
             on_text(tail)
         return channel.recv_exit_status()
+
+    def _session(self, command: str) -> paramiko.Channel:
+        channel = self._client.get_transport().open_session()
+        channel.exec_command(command)
+        return channel
+
+    def put_bytes(self, path: str, data: bytes, mode: str = "600") -> None:
+        """Write a file on the server. Created closed (umask 077), then chmod."""
+        quoted = shlex.quote(path)
+        channel = self._session(f"umask 077; cat > {quoted} && chmod {mode} {quoted}")
+        channel.sendall(data)
+        channel.shutdown_write()
+        code = channel.recv_exit_status()
+        if code != 0:
+            err = channel.recv_stderr(4096).decode("utf-8", "replace").strip()
+            raise SshError(f"could not write {path}: {err}")
+
+    def download_dir(
+        self,
+        remote_dir: str,
+        local_parent: Path,
+        on_bytes: Callable[[int], None] = lambda n: None,
+    ) -> Path:
+        """Copy a directory from the server as one tar stream.
+
+        The folder `name` lands as `local_parent/name`. Extraction uses the
+        "data" filter, so nothing the server sends can escape that folder.
+        """
+        parent, _, name = remote_dir.rstrip("/").rpartition("/")
+        channel = self._session(
+            f"tar -C {shlex.quote(parent or '/')} -cf - {shlex.quote(name)}"
+        )
+        channel.shutdown_write()
+        local_parent.mkdir(parents=True, exist_ok=True)
+        reader = _Counting(channel.makefile("rb"), on_bytes)
+        try:
+            with tarfile.open(fileobj=reader, mode="r|") as tar:
+                tar.extractall(local_parent, filter="data")
+        except tarfile.TarError as exc:
+            raise SshError(f"{remote_dir}: the copy is damaged: {exc}") from exc
+        code = channel.recv_exit_status()
+        if code != 0:
+            err = channel.recv_stderr(4096).decode("utf-8", "replace").strip()
+            raise SshError(f"{remote_dir}: tar failed on the server: {err}")
+        return local_parent / name
+
+    def upload_dir(
+        self,
+        local_dir: Path,
+        remote_parent: str,
+        on_bytes: Callable[[int], None] = lambda n: None,
+    ) -> str:
+        """Copy a local directory to `remote_parent/<its name>` as one tar stream."""
+        channel = self._session(
+            f"mkdir -p {shlex.quote(remote_parent)} && "
+            f"tar -C {shlex.quote(remote_parent)} -xf -"
+        )
+
+        def private(info: tarfile.TarInfo) -> tarfile.TarInfo:
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mode = 0o700 if info.isdir() else 0o600
+            return info
+
+        writer = _Counting(_ChannelWriter(channel), on_bytes)
+        with tarfile.open(fileobj=writer, mode="w|") as tar:
+            tar.add(local_dir, arcname=local_dir.name, filter=private)
+        channel.shutdown_write()
+        code = channel.recv_exit_status()
+        if code != 0:
+            err = channel.recv_stderr(4096).decode("utf-8", "replace").strip()
+            raise SshError(f"the upload failed on the server: {err}")
+        return f"{remote_parent.rstrip('/')}/{local_dir.name}"
 
     def close(self) -> None:
         self._client.close()

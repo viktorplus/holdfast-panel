@@ -69,8 +69,10 @@ class _Handler(paramiko.ServerInterface):
 
     def check_channel_exec_request(self, channel, command):
         def work():
+            stdin = channel.makefile("rb").read()  # until the client closes it
             done = subprocess.run(
                 [find_bash(), "-c", command.decode()],
+                input=stdin,
                 capture_output=True,
                 check=False,
                 env={**os.environ, "HOME": str(self.home)},
